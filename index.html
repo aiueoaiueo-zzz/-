@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>残業出口</title>
+<style>
+  :root {
+    --bg: #05060a;
+    --fg: #e8ecf2;
+    --dim: #8b93a3;
+    --accent: #5fd38d;
+    --danger: #ff6b6b;
+    --panel: rgba(8, 10, 16, 0.86);
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #05060a; } }
+  :root[data-theme="dark"] { --bg: #05060a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+    font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; touch-action: none; }
+  #hud { position: fixed; top: 12px; left: 16px; font-size: 14px; line-height: 1.5; pointer-events: none;
+    text-shadow: 0 1px 3px #000; display: none; }
+  #hud b { font-size: 22px; }
+  #cross { position: fixed; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%;
+    background: rgba(255,255,255,.6); pointer-events: none; display: none; }
+  .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px;
+    background: var(--panel); z-index: 10; }
+  .card { max-width: 520px; width: 100%; text-align: center; }
+  .card h1 { font-size: 40px; letter-spacing: .2em; margin: 0 0 4px; }
+  .card .sub { color: var(--dim); margin: 0 0 24px; font-size: 14px; }
+  .rules { text-align: left; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1);
+    border-radius: 8px; padding: 14px 18px; font-size: 14px; line-height: 1.9; margin-bottom: 20px; }
+  .rules .ok { color: var(--accent); } .rules .ng { color: var(--danger); }
+  .keys { color: var(--dim); font-size: 12px; margin-bottom: 20px; line-height: 1.7; }
+  button { font: inherit; font-size: 16px; padding: 12px 36px; border-radius: 6px; border: 1px solid #fff3;
+    background: #1d2330; color: var(--fg); cursor: pointer; }
+  button:hover { background: #2a3245; }
+  #fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity .35s;
+    display: flex; align-items: center; justify-content: center; flex-direction: column; z-index: 5; }
+  #fade .big { font-size: 64px; font-weight: bold; letter-spacing: .1em; }
+  #fade .msg { margin-top: 12px; font-size: 15px; color: var(--dim); text-align: center; padding: 0 16px; }
+  #fade .msg.ng { color: var(--danger); }
+  #stick { position: fixed; width: 110px; height: 110px; border-radius: 50%; border: 2px solid #fff4;
+    display: none; pointer-events: none; z-index: 4; }
+  #stick i { position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+    border-radius: 50%; background: #fff3; }
+  #log { max-height: 160px; overflow: auto; text-align: left; font-size: 13px; color: var(--dim);
+    columns: 2; column-gap: 16px; margin: 0 0 20px; padding: 0; list-style: none; }
+  #log li.found { color: var(--fg); }
+</style>
+</head>
+<body>
+<div id="hud"><b id="hFloor">8F</b><br><span id="hTime">0:00</span>　やり直し <span id="hMiss">0</span></div>
+<div id="cross"></div>
+<div id="stick"><i></i></div>
+<div id="fade"><div class="big" id="fBig"></div><div class="msg" id="fMsg"></div></div>
+
+<div class="screen" id="title">
+  <div class="card">
+    <h1>残業出口</h1>
+    <p class="sub">午後10時47分。早く帰りたい。</p>
+    <div class="rules">
+      ・ 異変を見つけたら、<span class="ng">すぐに引き返す</span>（後ろの扉へ）<br>
+      ・ 異変がなければ、<span class="ok">先へ進む</span>（奥の扉へ）<br>
+      ・ 間違えたら 8F からやり直し<br>
+      ・ 1F まで降りれば退勤
+    </div>
+    <div class="keys">PC：クリックで視点固定 ／ WASD・矢印で移動 ／ マウスで視点 ／ Shiftで早歩き<br>
+      スマホ：左半分ドラッグで移動 ／ 右半分ドラッグで視点</div>
+    <button id="startBtn">出勤…じゃなくて退勤する</button>
+  </div>
+</div>
+
+<div class="screen" id="pause" style="display:none">
+  <div class="card"><h1 style="font-size:28px">一時停止</h1><p class="sub">クリックで再開</p><button id="resumeBtn">再開</button></div>
+</div>
+
+<div class="screen" id="clear" style="display:none">
+  <div class="card">
+    <h1 style="font-size:32px">お疲れさまでした</h1>
+    <p class="sub" id="cStats"></p>
+    <p class="sub" id="cFound" style="margin-bottom:8px"></p>
+    <ul id="log"></ul>
+    <button id="againBtn">もう一度</button>
+  </div>
+</div>
+
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------- 設定
+const START_FLOOR = 8;
+const W = 3, HALF = W / 2;
+const BASE_L = 26, BASE_H = 2.7;
+const ANOMALY_RATE = 0.6;
+const PI = Math.PI;
+
+const ANOMALIES = [
+  { id: 'clock_spin',    name: '時計の針が高速で回っている' },
+  { id: 'elevator_open', name: 'エレベーターが開いている' },
+  { id: 'npc_watch',     name: '同僚がこちらを見ている' },
+  { id: 'npc_double',    name: '奥にもう一人同僚がいる' },
+  { id: 'light_flicker', name: '照明がひとつ点滅している' },
+  { id: 'light_red',     name: '照明が赤い' },
+  { id: 'exit_red',      name: '非常口の表示が赤い' },
+  { id: 'floor_mirror',  name: '階数表示が反転している' },
+  { id: 'poster_text',   name: '「定時退社日」が「なし」になっている' },
+  { id: 'poster_flip',   name: '掲示物が逆さま' },
+  { id: 'window_lit',    name: 'オフィスのモニターが全部ついている' },
+  { id: 'window_person', name: 'オフィスの中に人影がある' },
+  { id: 'ext_gone',      name: '消火器がない' },
+  { id: 'plant_big',     name: '観葉植物が巨大' },
+  { id: 'door_open',     name: '会議室のドアが開いている' },
+  { id: 'door_extra',    name: '見知らぬドアが増えている' },
+  { id: 'trash_fallen',  name: 'ゴミ箱が倒れている' },
+  { id: 'footprints',    name: '床に足跡がある' },
+  { id: 'chair',         name: '廊下の真ん中に椅子がある' },
+  { id: 'ceiling_low',   name: '天井が低い' },
+  { id: 'longer',        name: '廊下が長い' },
+  { id: 'phone',         name: 'どこかで電話が鳴っている' },
+  { id: 'cooler_red',    name: 'ウォーターサーバーの水が赤い' },
+  { id: 'clock_gone',    name: '時計の針がない' },
+];
+const nameOf = id => ANOMALIES.find(a => a.id === id)?.name ?? '';
+
+// ---------------------------------------------------------------- 描画基盤
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05060a);
+scene.fog = new THREE.Fog(0x05060a, 10, 36);
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 100);
+camera.rotation.order = 'YXZ';
+
+const ambient = new THREE.AmbientLight(0xb8c0d0, 0.75);
+const hemi = new THREE.HemisphereLight(0xdde4ff, 0x30302a, 0.6);
+scene.add(ambient, hemi);
+
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+// ---------------------------------------------------------------- ヘルパー
+const lam = (color, extra = {}) => new THREE.MeshLambertMaterial({ color, flatShading: true, ...extra });
+const glow = color => new THREE.MeshBasicMaterial({ color });
+
+function box(parent, w, h, d, color, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), typeof color === 'number' ? lam(color) : color);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+function cyl(parent, rt, rb, h, color, x = 0, y = 0, z = 0, seg = 8) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), typeof color === 'number' ? lam(color) : color);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+
+const texCache = new Map();
+function canvasTex(key, w, h, draw) {
+  if (texCache.has(key)) return texCache.get(key);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  texCache.set(key, t);
+  return t;
+}
+function textPlane(parent, key, w, h, pw, ph, draw, basic = false) {
+  const tex = canvasTex(key, w, h, draw);
+  const mat = basic ? new THREE.MeshBasicMaterial({ map: tex }) : new THREE.MeshLambertMaterial({ map: tex });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), mat);
+  parent.add(m);
+  return m;
+}
+const FONT = '"Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif';
+
+// 壁に貼り付けるためのグループ。ローカル +z が廊下側を向く
+function onWall(parent, side, z, y = 0) {
+  const g = new THREE.Group();
+  g.position.set(side * (HALF - 0.005), y, z);
+  g.rotation.y = side < 0 ? PI / 2 : -PI / 2;
+  parent.add(g);
+  return g;
+}
+
+function tiledTex(key, size, draw, rx, ry) {
+  const base = canvasTex(key, size, size, draw);
+  const t = base.clone();
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.userData.temp = true;
+  t.needsUpdate = true;
+  return t;
+}
+const drawCarpet = (g, w, h) => {
+  g.fillStyle = '#5b6068'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 400; i++) { g.fillStyle = Math.random() < .5 ? '#555a62' : '#61666e'; g.fillRect(Math.random() * w, Math.random() * h, 3, 3); }
+  g.strokeStyle = '#4c5058'; g.lineWidth = 2; g.strokeRect(0, 0, w, h);
+};
+const drawCeiling = (g, w, h) => {
+  g.fillStyle = '#d9dbd8'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#a9aba8'; g.lineWidth = 3; g.strokeRect(0, 0, w, h);
+};
+
+function dispose(obj) {
+  obj.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) {
+      const ms = Array.isArray(o.material) ? o.material : [o.material];
+      ms.forEach(m => { if (m.map?.userData.temp) m.map.dispose(); m.dispose(); });
+    }
+  });
+}
+
+// ---------------------------------------------------------------- 小物
+function makeNPC(parent) {
+  const g = new THREE.Group();
+  const suit = 0x2b2f3a, skin = 0xe2b896;
+  box(g, 0.13, 0.85, 0.16, 0x1d2028, -0.1, 0.425, 0);
+  box(g, 0.13, 0.85, 0.16, 0x1d2028, 0.1, 0.425, 0);
+  box(g, 0.46, 0.62, 0.26, suit, 0, 1.16, 0);
+  box(g, 0.2, 0.4, 0.01, 0xf2f2f2, 0, 1.25, 0.131);
+  box(g, 0.05, 0.34, 0.012, 0x9a2430, 0, 1.22, 0.137);
+  // 腕は少し前へ
+  const armL = box(g, 0.11, 0.55, 0.12, suit, -0.29, 1.12, 0.08); armL.rotation.x = -0.5;
+  const armR = box(g, 0.11, 0.55, 0.12, suit, 0.29, 1.12, 0.08); armR.rotation.x = -0.5;
+  const head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.14, 1), lam(skin));
+  head.position.set(0, 1.62, 0); g.add(head);
+  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 6, 0, PI * 2, 0, PI * 0.55), lam(0x1a1410));
+  hair.position.set(0, 1.64, -0.025); hair.rotation.x = -0.35; g.add(hair);
+  box(g, 0.03, 0.03, 0.02, 0x111111, -0.05, 1.64, 0.13);
+  box(g, 0.03, 0.03, 0.02, 0x111111, 0.05, 1.64, 0.13);
+  parent.add(g);
+  return g;
+}
+
+function makeDoor(parent, side, z, label, open = false) {
+  const w = onWall(parent, side, z);
+  box(w, 1.1, 2.2, 0.06, 0x8c8a84, 0, 1.1, 0.02);
+  box(w, 0.96, 2.1, 0.02, 0x050505, 0, 1.05, 0.03);
+  const hinge = new THREE.Group();
+  hinge.position.set(-0.48, 0, 0.06);
+  w.add(hinge);
+  box(hinge, 0.96, 2.08, 0.05, 0x6f7d84, 0.48, 1.05, 0);
+  box(hinge, 0.12, 0.03, 0.05, 0xc8c8c8, 0.85, 1.0, 0.04);
+  if (open) hinge.rotation.y = -1.15;
+  if (label) {
+    const p = textPlane(w, 'door:' + label, 256, 64, 0.5, 0.125, (g, cw, ch) => {
+      g.fillStyle = '#f2f2ee'; g.fillRect(0, 0, cw, ch);
+      g.fillStyle = '#333'; g.font = `bold 38px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(label, cw / 2, ch / 2 + 2);
+    });
+    p.position.set(0.85, 1.6, 0.03);
+  }
+  return w;
+}
+
+function makeExitSign(parent, z, facing, red) {
+  const key = red ? 'exit:red' : 'exit:green';
+  const p = textPlane(parent, key, 256, 96, 0.6, 0.22, (g, cw, ch) => {
+    g.fillStyle = red ? '#d2252b' : '#1f9c4a'; g.fillRect(0, 0, cw, ch);
+    g.fillStyle = '#fff'; g.font = `bold 44px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('非常口  ⇨', cw / 2, ch / 2 + 2);
+  }, true);
+  p.position.set(0, 2.35, z);
+  p.rotation.y = facing;
+  return p;
+}
+
+// ---------------------------------------------------------------- 1周分のレベル生成
+let level = null;
+
+function buildLevel(floor, anomaly) {
+  if (level) { scene.remove(level.group); dispose(level.group); }
+  const A = id => anomaly === id;
+  const L = A('longer') ? 38 : BASE_L;
+  const H = A('ceiling_low') ? 2.15 : BASE_H;
+  const g = new THREE.Group();
+  const upd = [];
+  const lightColor = A('light_red') ? 0xff4038 : 0xf4f2ea;
+
+  // 床・天井・壁
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(W, L),
+    new THREE.MeshLambertMaterial({ map: tiledTex('carpet', 128, drawCarpet, W / 1.5, L / 1.5) }));
+  fl.rotation.x = -PI / 2; fl.position.set(0, 0, -L / 2); g.add(fl);
+  const ce = new THREE.Mesh(new THREE.PlaneGeometry(W, L),
+    new THREE.MeshLambertMaterial({ map: tiledTex('ceiling', 64, drawCeiling, W / 0.6, L / 0.6) }));
+  ce.rotation.x = PI / 2; ce.position.set(0, H, -L / 2); g.add(ce);
+  const wallMat = lam(0xcfc8b8);
+  for (const s of [-1, 1]) {
+    const wm = new THREE.Mesh(new THREE.PlaneGeometry(L, H), wallMat);
+    wm.position.set(s * HALF, H / 2, -L / 2); wm.rotation.y = -s * PI / 2; g.add(wm);
+    box(g, 0.02, 0.1, L, 0x3a3a3a, s * (HALF - 0.01), 0.05, -L / 2);
+  }
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(W, H), wallMat);
+  back.position.set(0, H / 2, 0); back.rotation.y = PI; g.add(back);
+  const end = new THREE.Mesh(new THREE.PlaneGeometry(W, H), wallMat);
+  end.position.set(0, H / 2, -L); g.add(end);
+
+  // 両端の階段扉
+  const dBack = new THREE.Group(); dBack.position.set(0, 0, 0.0); dBack.rotation.y = PI; g.add(dBack);
+  makeStairDoor(dBack);
+  const dEnd = new THREE.Group(); dEnd.position.set(0, 0, -L); g.add(dEnd);
+  makeStairDoor(dEnd);
+  makeExitSign(g, -0.01, PI, false);
+  makeExitSign(g, -L + 0.01, 0, A('exit_red'));
+
+  // 照明
+  const panels = [];
+  for (let z = -2; z > -L + 1; z -= 3.5) {
+    const p = box(g, 1.2, 0.04, 0.45, glow(lightColor), 0, H - 0.02, z);
+    panels.push(p);
+  }
+  const lights = [];
+  for (let z = -3; z > -L; z -= 7) {
+    const l = new THREE.PointLight(lightColor, 7, 11, 1.3);
+    l.position.set(0, H - 0.3, z); g.add(l); lights.push(l);
+  }
+  ambient.color.set(A('light_red') ? 0xc06060 : 0xb8c0d0);
+  hemi.color.set(A('light_red') ? 0xff8080 : 0xdde4ff);
+  if (A('light_flicker')) {
+    const p = panels[Math.floor(panels.length / 2)];
+    const l = lights.reduce((a, b) => Math.abs(b.position.z - p.position.z) < Math.abs(a.position.z - p.position.z) ? b : a);
+    let t = 0, on = true;
+    upd.push(dt => {
+      t -= dt;
+      if (t <= 0) { on = !on; t = on ? 0.05 + Math.random() * 0.6 : 0.03 + Math.random() * 0.15; }
+      p.material.color.set(on ? lightColor : 0x222222);
+      l.intensity = on ? 7 : 1.5;
+    });
+  }
+
+  // 階数表示
+  {
+    const w = onWall(g, -1, -2.6, 1.55);
+    const mirror = A('floor_mirror');
+    const p = textPlane(w, `floor:${floor}:${mirror}`, 256, 256, 0.55, 0.55, (c, cw, ch) => {
+      c.fillStyle = '#1d2a44'; c.fillRect(0, 0, cw, ch);
+      c.fillStyle = '#fff'; c.font = `bold 150px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      if (mirror) { c.translate(cw, 0); c.scale(-1, 1); }
+      c.fillText(`${floor}F`, cw / 2, ch / 2 + 8);
+    });
+    p.position.z = 0.01;
+  }
+
+  // 掲示板
+  {
+    const w = onWall(g, -1, -4.6, 1.45);
+    box(w, 1.5, 0.95, 0.03, 0x8a6a45, 0, 0, 0.015);
+    const posters = [
+      ['p1', '節電のお願い', '退室時は消灯を', '#fdfdf8'],
+      ['p2', '定時退社日', A('poster_text') ? 'な し' : '毎週水曜', '#fff3c8'],
+      ['p3', '健康診断', '11月12日（木）', '#e2efff'],
+    ];
+    posters.forEach(([k, t1, t2, bg], i) => {
+      const p = textPlane(w, `poster:${k}:${t2}`, 192, 256, 0.36, 0.48, (c, cw, ch) => {
+        c.fillStyle = bg; c.fillRect(0, 0, cw, ch);
+        c.fillStyle = '#222'; c.textAlign = 'center';
+        c.font = `bold 28px ${FONT}`; c.fillText(t1, cw / 2, 60);
+        c.fillStyle = t2 === 'な し' ? '#b00' : '#444';
+        c.font = `${t2 === 'な し' ? 'bold 40' : '22'}px ${FONT}`; c.fillText(t2, cw / 2, 130);
+        c.fillStyle = '#bbb'; for (let y = 170; y < 236; y += 14) c.fillRect(24, y, cw - 48, 4);
+      });
+      p.position.set(-0.45 + i * 0.45, i === 1 ? 0.04 : -0.02, 0.035);
+      p.rotation.z = (i - 1) * 0.04;
+      if (i === 2 && A('poster_flip')) p.rotation.z = PI;
+    });
+  }
+
+  // ウォーターサーバー
+  {
+    const w = onWall(g, 1, -5.6);
+    box(w, 0.34, 1.0, 0.34, 0xeeeeee, 0, 0.5, 0.2);
+    box(w, 0.1, 0.06, 0.06, 0x3060c0, -0.07, 0.8, 0.39);
+    box(w, 0.1, 0.06, 0.06, 0xc03030, 0.07, 0.8, 0.39);
+    cyl(w, 0.15, 0.15, 0.42, lam(A('cooler_red') ? 0x9a1018 : 0x8cc4ea, { transparent: true, opacity: 0.85 }), 0, 1.22, 0.2, 10);
+  }
+
+  // 時計
+  {
+    const w = onWall(g, -1, -7.8, Math.min(2.1, H - 0.3));
+    const face = cyl(w, 0.2, 0.2, 0.04, 0xf4f4f0, 0, 0, 0.02, 16); face.rotation.x = PI / 2;
+    const rim = cyl(w, 0.215, 0.215, 0.03, 0x222222, 0, 0, 0.012, 16); rim.rotation.x = PI / 2;
+    for (let i = 0; i < 12; i++) {
+      const a = i / 12 * PI * 2;
+      box(w, 0.015, 0.035, 0.01, 0x222222, Math.sin(a) * 0.16, Math.cos(a) * 0.16, 0.045).rotation.z = -a;
+    }
+    if (!A('clock_gone')) {
+      const mk = (len, th) => { const pv = new THREE.Group(); pv.position.z = 0.05; w.add(pv); box(pv, th, len, 0.008, 0x111111, 0, len / 2 - 0.02, 0); return pv; };
+      const hour = mk(0.1, 0.022), minute = mk(0.15, 0.014);
+      // 22:47
+      minute.rotation.z = -(47 / 60) * PI * 2;
+      hour.rotation.z = -((10 + 47 / 60) / 12) * PI * 2;
+      if (A('clock_spin')) upd.push(dt => { minute.rotation.z -= dt * 6; hour.rotation.z -= dt * 0.5; });
+    }
+  }
+
+  // エレベーター
+  {
+    const w = onWall(g, 1, -9.8);
+    const open = A('elevator_open');
+    box(w, 1.5, 2.35, 0.05, 0x9aa0a6, 0, 1.175, 0.02);
+    box(w, 1.2, 2.15, 0.02, 0x020202, 0, 1.075, 0.05);
+    box(w, 0.58, 2.1, 0.03, 0xb9bec4, open ? -0.85 : -0.3, 1.05, 0.065);
+    box(w, 0.58, 2.1, 0.03, 0xb9bec4, open ? 0.85 : 0.3, 1.05, 0.065);
+    const ind = textPlane(w, `elev:${floor}`, 128, 64, 0.3, 0.15, (c, cw, ch) => {
+      c.fillStyle = '#111'; c.fillRect(0, 0, cw, ch);
+      c.fillStyle = '#ff9a30'; c.font = `bold 40px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(`▼ ${floor}`, cw / 2, ch / 2 + 2);
+    }, true);
+    ind.position.set(0, Math.min(2.5, H - 0.12), 0.05);
+    box(w, 0.08, 0.18, 0.03, 0x666666, 0.95, 1.1, 0.03);
+  }
+
+  // オフィスの窓（中は暗いオフィス）
+  {
+    const w = onWall(g, -1, -12.6, 1.4);
+    const v = A('window_lit') ? 'lit' : A('window_person') ? 'person' : 'normal';
+    box(w, 3.1, 1.3, 0.04, 0x55585e, 0, 0, 0.01);
+    const p = textPlane(w, `win:${v}`, 512, 200, 3.0, 1.2, (c, cw, ch) => {
+      const grd = c.createLinearGradient(0, 0, 0, ch);
+      grd.addColorStop(0, '#0b0f18'); grd.addColorStop(1, '#141a26');
+      c.fillStyle = grd; c.fillRect(0, 0, cw, ch);
+      for (let row = 0; row < 2; row++) {
+        const y = 95 + row * 50, s = 1 - row * 0.25;
+        for (let i = 0; i < 6; i++) {
+          const x = 30 + i * 80 + row * 30;
+          c.fillStyle = '#1e2430'; c.fillRect(x, y + 22 * s, 64 * s, 8 * s);
+          const lit = v === 'lit' || (row === 0 && i === 3);
+          c.fillStyle = lit ? '#9fd0ff' : '#0a0c10';
+          c.fillRect(x + 14 * s, y - 6 * s, 34 * s, 22 * s);
+        }
+      }
+      if (v === 'person') {
+        c.fillStyle = '#000';
+        c.beginPath(); c.arc(300, 70, 14, 0, PI * 2); c.fill();
+        c.fillRect(284, 84, 32, 70);
+      }
+      c.fillStyle = 'rgba(255,255,255,0.05)'; c.fillRect(0, 0, cw, ch);
+      c.strokeStyle = '#3a3d44'; c.lineWidth = 6; c.beginPath(); c.moveTo(cw / 2, 0); c.lineTo(cw / 2, ch); c.stroke();
+    }, true);
+    p.position.z = 0.035;
+    if (A('phone')) level_phoneZ = -12.6;
+  }
+
+  // コピー機と同僚
+  let npc;
+  {
+    const w = onWall(g, 1, -15);
+    box(w, 0.75, 0.9, 0.6, 0xd4d4cf, 0, 0.45, 0.32);
+    box(w, 0.75, 0.12, 0.45, 0xb8b8b2, 0, 0.96, 0.28);
+    box(w, 0.25, 0.08, 0.12, 0x444444, 0.18, 0.93, 0.58);
+    box(w, 0.03, 0.03, 0.01, 0x30ff70, 0.28, 0.95, 0.645).material = glow(0x30ff70);
+    npc = makeNPC(g);
+    npc.position.set(HALF - 0.95, 0, -15);
+    npc.rotation.y = PI / 2;
+    if (A('npc_watch')) upd.push(() => { npc.rotation.y = Math.atan2(camera.position.x - npc.position.x, camera.position.z - npc.position.z); });
+  }
+  if (A('npc_double')) {
+    const n2 = makeNPC(g);
+    n2.position.set(-0.55, 0, -L + 1.8);
+    n2.rotation.y = 0;
+  }
+
+  // 消火器
+  {
+    const w = onWall(g, -1, -17.2);
+    if (!A('ext_gone')) {
+      cyl(w, 0.09, 0.09, 0.45, 0xc4161c, 0, 0.3, 0.12, 10);
+      cyl(w, 0.03, 0.04, 0.08, 0x222222, 0, 0.56, 0.12, 6);
+    }
+    box(w, 0.36, 0.3, 0.06, 0xb01818, 0, 0.17, 0.04);
+    const s = textPlane(w, 'sign:ext', 192, 64, 0.36, 0.12, (c, cw, ch) => {
+      c.fillStyle = '#c4161c'; c.fillRect(0, 0, cw, ch);
+      c.fillStyle = '#fff'; c.font = `bold 40px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText('消火器', cw / 2, ch / 2 + 2);
+    });
+    s.position.set(0, 1.2, 0.01);
+  }
+
+  // 観葉植物
+  {
+    const w = onWall(g, 1, -18.4);
+    const pl = new THREE.Group(); pl.position.set(0, 0, 0.35); w.add(pl);
+    cyl(pl, 0.2, 0.15, 0.35, 0xf0efe8, 0, 0.175, 0, 8);
+    cyl(pl, 0.025, 0.03, 0.5, 0x5a4028, 0, 0.6, 0, 5);
+    for (let i = 0; i < 6; i++) {
+      const lf = new THREE.Mesh(new THREE.IcosahedronGeometry(0.17, 0), lam(i % 2 ? 0x2f7a3a : 0x3b8f45));
+      const a = i / 6 * PI * 2;
+      lf.position.set(Math.cos(a) * 0.14, 0.9 + (i % 3) * 0.1, Math.sin(a) * 0.14);
+      pl.add(lf);
+    }
+    if (A('plant_big')) pl.scale.setScalar(2.1);
+  }
+
+  // 会議室ドア
+  makeDoor(g, -1, -20, '会議室A', A('door_open'));
+  if (A('door_extra')) makeDoor(g, -1, -22.4, '');
+
+  // ゴミ箱
+  {
+    const w = onWall(g, 1, -22);
+    if (A('trash_fallen')) {
+      const t = cyl(w, 0.17, 0.13, 0.42, 0x6b7078, 0, 0.17, 0.5, 8); t.rotation.set(PI / 2, 0, 0.4);
+      for (let i = 0; i < 6; i++) {
+        const b = new THREE.Mesh(new THREE.IcosahedronGeometry(0.05, 0), lam(0xf4f4f4));
+        b.position.set(-0.4 + Math.random() * 0.8, 0.05, 0.6 + Math.random() * 0.6); w.add(b);
+      }
+    } else {
+      cyl(w, 0.17, 0.13, 0.42, 0x6b7078, 0, 0.21, 0.22, 8);
+    }
+  }
+
+  // 足跡
+  if (A('footprints')) {
+    const fm = new THREE.MeshLambertMaterial({ color: 0x24201c });
+    const fg = new THREE.PlaneGeometry(0.11, 0.26);
+    for (let i = 0, z = -4; z > -19.6; z -= 0.45, i++) {
+      const f = new THREE.Mesh(fg, fm);
+      const t = (z + 4) / -15.6;
+      f.rotation.x = -PI / 2;
+      f.position.set(0.3 - t * 1.3 + (i % 2 ? 0.12 : -0.12), 0.006, z);
+      f.rotation.z = t * 0.5;
+      g.add(f);
+    }
+  }
+
+  // 椅子
+  if (A('chair')) {
+    const c = new THREE.Group(); c.position.set(0.15, 0, -13.2); c.rotation.y = 2.4; g.add(c);
+    box(c, 0.5, 0.08, 0.48, 0x23262c, 0, 0.48, 0);
+    box(c, 0.48, 0.55, 0.07, 0x23262c, 0, 0.82, -0.22);
+    cyl(c, 0.03, 0.03, 0.4, 0x777777, 0, 0.26, 0, 6);
+    for (let i = 0; i < 5; i++) { const leg = box(c, 0.05, 0.04, 0.32, 0x333333, 0, 0.06, 0); leg.rotation.y = i / 5 * PI * 2; leg.translateZ(0.15); }
+  }
+
+  scene.add(g);
+  level = { group: g, L, H, anomaly, upd };
+}
+
+function makeStairDoor(parent) {
+  // parent のローカル +z が廊下側
+  box(parent, 1.2, 2.25, 0.06, 0x7a7a74, 0, 1.125, 0.03);
+  box(parent, 1.04, 2.12, 0.04, 0x4c5b52, 0, 1.06, 0.07);
+  box(parent, 0.14, 0.04, 0.05, 0xcccccc, 0.36, 1.0, 0.1);
+  const s = textPlane(parent, 'sign:stairs', 256, 64, 0.5, 0.125, (c, cw, ch) => {
+    c.fillStyle = '#f2f2ee'; c.fillRect(0, 0, cw, ch);
+    c.fillStyle = '#333'; c.font = `bold 38px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText('階段 ↓', cw / 2, ch / 2 + 2);
+  });
+  s.position.set(0, 1.55, 0.095);
+}
+
+// ---------------------------------------------------------------- サウンド
+let ac = null, phoneGain = null, noiseBuf = null;
+let level_phoneZ = null;
+function initAudio() {
+  if (ac) return;
+  try {
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    // 空調のハム
+    const hum = ac.createOscillator(); hum.frequency.value = 58;
+    const hg = ac.createGain(); hg.gain.value = 0.025;
+    hum.connect(hg).connect(ac.destination); hum.start();
+    // 電話のベル
+    phoneGain = ac.createGain(); phoneGain.gain.value = 0;
+    for (const f of [1280, 1600]) {
+      const o = ac.createOscillator(); o.type = 'square'; o.frequency.value = f;
+      const og = ac.createGain(); og.gain.value = 0.04;
+      o.connect(og).connect(phoneGain); o.start();
+    }
+    const lfo = ac.createOscillator(); lfo.type = 'square'; lfo.frequency.value = 16;
+    const lg = ac.createGain(); lg.gain.value = 0.5;
+    const trem = ac.createGain(); trem.gain.value = 0.5;
+    lfo.connect(lg).connect(trem.gain); lfo.start();
+    phoneGain.connect(trem).connect(ac.destination);
+    // 足音用ノイズ
+    noiseBuf = ac.createBuffer(1, ac.sampleRate * 0.12, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+  } catch (e) { ac = null; }
+}
+function footstep() {
+  if (!ac) return;
+  const s = ac.createBufferSource(); s.buffer = noiseBuf;
+  const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 500 + Math.random() * 200;
+  const gn = ac.createGain(); gn.gain.value = 0.35;
+  s.connect(f).connect(gn).connect(ac.destination); s.start();
+}
+
+// ---------------------------------------------------------------- 入力
+const keys = {};
+addEventListener('keydown', e => { keys[e.code] = true; });
+addEventListener('keyup', e => { keys[e.code] = false; });
+let yaw = 0, pitch = 0;
+const canvas = renderer.domElement;
+let dragging = false;
+function look(dx, dy, k = 0.0022) {
+  yaw -= dx * k;
+  pitch = Math.max(-1.2, Math.min(1.2, pitch - dy * k));
+}
+canvas.addEventListener('mousedown', () => {
+  dragging = true;
+  if (state === 'play' && !document.pointerLockElement) { try { canvas.requestPointerLock()?.catch?.(() => {}); } catch (e) {} }
+});
+addEventListener('mouseup', () => { dragging = false; });
+addEventListener('mousemove', e => {
+  if (state !== 'play') return;
+  if (document.pointerLockElement === canvas || dragging) look(e.movementX, e.movementY);
+});
+let wasLocked = false;
+document.addEventListener('pointerlockchange', () => {
+  const locked = document.pointerLockElement === canvas;
+  if (!locked && wasLocked && state === 'play') setPause(true);
+  wasLocked = locked;
+});
+
+// タッチ：左半分＝移動スティック、右半分＝視点
+const touchMove = { id: null, ox: 0, oy: 0, x: 0, y: 0 };
+const touchLook = { id: null, x: 0, y: 0 };
+const stick = document.getElementById('stick');
+canvas.addEventListener('touchstart', e => {
+  for (const t of e.changedTouches) {
+    if (t.clientX < innerWidth / 2 && touchMove.id === null) {
+      Object.assign(touchMove, { id: t.identifier, ox: t.clientX, oy: t.clientY, x: 0, y: 0 });
+      stick.style.display = 'block'; stick.style.left = (t.clientX - 55) + 'px'; stick.style.top = (t.clientY - 55) + 'px';
+    } else if (touchLook.id === null) {
+      Object.assign(touchLook, { id: t.identifier, x: t.clientX, y: t.clientY });
+    }
+  }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === touchMove.id) {
+      let dx = t.clientX - touchMove.ox, dy = t.clientY - touchMove.oy;
+      const len = Math.hypot(dx, dy), max = 50;
+      if (len > max) { dx *= max / len; dy *= max / len; }
+      touchMove.x = dx / max; touchMove.y = dy / max;
+      stick.firstChild.style.transform = `translate(${dx}px,${dy}px)`;
+    } else if (t.identifier === touchLook.id) {
+      if (state === 'play') look(t.clientX - touchLook.x, t.clientY - touchLook.y, 0.005);
+      touchLook.x = t.clientX; touchLook.y = t.clientY;
+    }
+  }
+  e.preventDefault();
+}, { passive: false });
+const endTouch = e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === touchMove.id) { touchMove.id = null; touchMove.x = touchMove.y = 0; stick.style.display = 'none'; stick.firstChild.style.transform = ''; }
+    if (t.identifier === touchLook.id) touchLook.id = null;
+  }
+};
+canvas.addEventListener('touchend', endTouch);
+canvas.addEventListener('touchcancel', endTouch);
+
+// ---------------------------------------------------------------- ゲーム進行
+const $ = id => document.getElementById(id);
+let state = 'title';
+let floor = START_FLOOR, misses = 0, elapsed = 0, loopTime = 0, lastAnomaly = null;
+let stepAcc = 0, bob = 0;
+let found = new Set();
+try { found = new Set(JSON.parse(localStorage.getItem('zangyo-found') || '[]')); } catch (e) {}
+const saveFound = () => { try { localStorage.setItem('zangyo-found', JSON.stringify([...found])); } catch (e) {} };
+
+function pickAnomaly() {
+  if (floor === START_FLOOR) return null; // 8F は必ず「いつもの廊下」
+  if (Math.random() > ANOMALY_RATE) return null;
+  let a;
+  do { a = ANOMALIES[Math.floor(Math.random() * ANOMALIES.length)].id; } while (a === lastAnomaly);
+  return a;
+}
+
+function enterLoop() {
+  const a = pickAnomaly();
+  if (a) lastAnomaly = a;
+  level_phoneZ = null;
+  buildLevel(floor, a);
+  camera.position.set(0, 1.6, -1.8);
+  yaw = 0; pitch = 0; loopTime = 0;
+  $('hFloor').textContent = floor + 'F';
+}
+
+function decide(choice) {
+  if (state !== 'play') return;
+  const had = level.anomaly;
+  const correct = (choice === 'back') === !!had;
+  let big, msg = '', ng = false;
+  if (correct) {
+    if (choice === 'back') { found.add(had); saveFound(); }
+    floor--;
+    big = floor + 'F';
+  } else {
+    misses++;
+    floor = START_FLOOR;
+    big = floor + 'F';
+    ng = true;
+    msg = had ? `見逃した異変：${nameOf(had)}` : '異変はなかった…';
+  }
+  $('hMiss').textContent = misses;
+  if (floor <= 1) return finish();
+  transition(big, msg, ng);
+}
+
+function transition(big, msg, ng) {
+  state = 'transition';
+  const f = $('fade');
+  $('fBig').textContent = big; $('fMsg').textContent = msg; $('fMsg').className = 'msg' + (ng ? ' ng' : '');
+  f.style.opacity = 1;
+  setTimeout(() => {
+    enterLoop();
+    setTimeout(() => { f.style.opacity = 0; state = 'play'; }, ng ? 1600 : 500);
+  }, 400);
+}
+
+function finish() {
+  state = 'clear';
+  document.exitPointerLock?.();
+  const f = $('fade');
+  $('fBig').textContent = '1F'; $('fMsg').textContent = ''; f.style.opacity = 1;
+  const m = Math.floor(elapsed / 60), s = Math.floor(elapsed % 60);
+  $('cStats').textContent = `退勤タイム ${m}:${String(s).padStart(2, '0')}　／　やり直し ${misses} 回`;
+  $('cFound').textContent = `発見した異変 ${found.size} / ${ANOMALIES.length}`;
+  $('log').innerHTML = ANOMALIES.map(a => found.has(a.id) ? `<li class="found">✔ ${a.name}</li>` : '<li>？？？</li>').join('');
+  setTimeout(() => { $('clear').style.display = 'flex'; f.style.opacity = 0; }, 900);
+}
+
+function startGame() {
+  initAudio();
+  ac?.resume?.();
+  floor = START_FLOOR; misses = 0; elapsed = 0; lastAnomaly = null;
+  $('hMiss').textContent = 0;
+  ['title', 'clear', 'pause'].forEach(id => $(id).style.display = 'none');
+  $('hud').style.display = 'block'; $('cross').style.display = 'block';
+  enterLoop();
+  state = 'play';
+  if (!('ontouchstart' in window)) { try { canvas.requestPointerLock()?.catch?.(() => {}); } catch (e) {} }
+}
+function setPause(p) {
+  if (p) { state = 'pause'; $('pause').style.display = 'flex'; }
+  else {
+    $('pause').style.display = 'none'; state = 'play';
+    try { canvas.requestPointerLock()?.catch?.(() => {}); } catch (e) {}
+  }
+}
+$('startBtn').onclick = startGame;
+$('againBtn').onclick = startGame;
+$('resumeBtn').onclick = () => setPause(false);
+
+// ---------------------------------------------------------------- ループ
+const clock = new THREE.Clock();
+function tick() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  if (state === 'play' && level) {
+    elapsed += dt; loopTime += dt;
+    const m = Math.floor(elapsed / 60), s = Math.floor(elapsed % 60);
+    $('hTime').textContent = `${m}:${String(s).padStart(2, '0')}`;
+
+    let fx = 0, fz = 0;
+    if (keys.KeyW || keys.ArrowUp) fz -= 1;
+    if (keys.KeyS || keys.ArrowDown) fz += 1;
+    if (keys.KeyA || keys.ArrowLeft) fx -= 1;
+    if (keys.KeyD || keys.ArrowRight) fx += 1;
+    fx += touchMove.x; fz += touchMove.y;
+    const len = Math.hypot(fx, fz);
+    if (len > 1) { fx /= len; fz /= len; }
+    const speed = (keys.ShiftLeft || keys.ShiftRight) ? 5 : 3.2;
+    const sin = Math.sin(yaw), cos = Math.cos(yaw);
+    const p = camera.position;
+    p.x += (fx * cos + fz * sin) * speed * dt;
+    p.z += (-fx * sin + fz * cos) * speed * dt;
+    p.x = Math.max(-HALF + 0.3, Math.min(HALF - 0.3, p.x));
+    p.z = Math.max(-level.L + 0.3, Math.min(-0.3, p.z));
+    const moving = Math.min(len, 1) * speed;
+    bob += moving * dt * 2.2;
+    p.y = 1.6 + Math.sin(bob * 2) * 0.025 * Math.min(moving, 1);
+    stepAcc += moving * dt;
+    if (stepAcc > 0.8) { stepAcc = 0; footstep(); }
+
+    level.upd.forEach(f => f(dt));
+
+    if (phoneGain) {
+      const v = level_phoneZ === null ? 0 : (Math.floor(loopTime * 2) % 6 < 2 ? 1 : 0) * Math.max(0.15, 1 - Math.abs(p.z - level_phoneZ) / 14);
+      phoneGain.gain.value = v;
+    }
+
+    if (p.z < -level.L + 0.9) decide('forward');
+    else if (p.z > -0.9 && loopTime > 1.2) decide('back');
+  } else if (phoneGain) phoneGain.gain.value = 0;
+
+  camera.rotation.set(pitch, yaw, 0);
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+
+// タイトル背景用に 8F を表示しておく（?a=異変ID で確認用にその異変を表示）
+buildLevel(START_FLOOR, new URLSearchParams(location.search).get('a'));
+camera.position.set(0, 1.6, -1.8);
+window.__dbg = { camera, view: (y, p) => { yaw = y; pitch = p; } };
+tick();
+</script>
+</body>
+</html>
