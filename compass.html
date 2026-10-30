@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>異変ステージ</title>
+<style>
+  :root {
+    --bg: #0b0a24;
+    --fg: #eef0ff;
+    --dim: #9aa0c8;
+    --ally: #45b4ff;
+    --enemy: #ff5a6e;
+    --gold: #ffd257;
+    --panel: rgba(10, 9, 32, 0.88);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+    font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; touch-action: none; }
+  #hud { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); left: calc(16px + env(safe-area-inset-left, 0px));
+    font-size: 14px; line-height: 1.5; pointer-events: none; text-shadow: 0 1px 3px #000; display: none; }
+  #hud b { font-size: 26px; color: var(--gold); letter-spacing: .05em; }
+  #cross { position: fixed; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%;
+    background: rgba(255,255,255,.7); pointer-events: none; display: none; }
+  .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px;
+    background: var(--panel); z-index: 10; }
+  .card { max-width: 540px; width: 100%; text-align: center; }
+  .card h1 { font-size: 40px; letter-spacing: .15em; margin: 0 0 4px; }
+  .card h1 em { font-style: normal; color: var(--ally); }
+  .card .sub { color: var(--dim); margin: 0 0 20px; font-size: 14px; }
+  .rules { text-align: left; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 8px; padding: 14px 18px; font-size: 14px; line-height: 1.9; margin-bottom: 16px; }
+  .rules .ok { color: var(--ally); } .rules .ng { color: var(--enemy); } .rules .s { color: var(--gold); }
+  .keys { color: var(--dim); font-size: 12px; margin-bottom: 18px; line-height: 1.7; }
+  .note { color: var(--dim); font-size: 11px; margin-top: 16px; }
+  button { font: inherit; font-size: 16px; padding: 12px 36px; border-radius: 6px; border: 1px solid #fff4;
+    background: #1d2a5a; color: var(--fg); cursor: pointer; }
+  button:hover { background: #2a3b7a; }
+  button:focus-visible { outline: 2px solid var(--ally); outline-offset: 2px; }
+  #fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity .35s;
+    display: flex; align-items: center; justify-content: center; flex-direction: column; z-index: 5; }
+  #fade .big { font-size: 64px; font-weight: bold; letter-spacing: .1em; color: var(--gold); }
+  #fade .msg { margin-top: 12px; font-size: 15px; color: var(--dim); text-align: center; padding: 0 16px; }
+  #fade .msg.ng { color: var(--enemy); }
+  #stick { position: fixed; width: 110px; height: 110px; border-radius: 50%; border: 2px solid #fff4;
+    display: none; pointer-events: none; z-index: 4; }
+  #stick i { position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+    border-radius: 50%; background: #fff3; }
+  #log { max-height: 170px; overflow: auto; text-align: left; font-size: 13px; color: var(--dim);
+    columns: 2; column-gap: 16px; margin: 0 0 20px; padding: 0; list-style: none; }
+  #log li.found { color: var(--fg); }
+</style>
+</head>
+<body>
+<div id="hud">RANK <b id="hRank">F</b><br><span id="hTime">0:00</span>　やり直し <span id="hMiss">0</span></div>
+<div id="cross"></div>
+<div id="stick"><i></i></div>
+<div id="fade"><div class="big" id="fBig"></div><div class="msg" id="fMsg"></div></div>
+
+<div class="screen" id="title">
+  <div class="card">
+    <h1>異変<em>ステージ</em></h1>
+    <p class="sub">いつものバトルステージ。……のはず。</p>
+    <div class="rules">
+      ・ 異変を見つけたら、<span class="ng">すぐに引き返す</span>（後ろのゲートへ）<br>
+      ・ 異変がなければ、<span class="ok">先へ進む</span>（奥のゲートへ）<br>
+      ・ 正解でランクアップ、間違えたら F ランクからやり直し<br>
+      ・ <span class="s">S ランク</span>に到達したらクリア
+    </div>
+    <div class="keys">PC：クリックで視点固定 ／ WASD・矢印で移動 ／ マウスで視点 ／ Shiftでダッシュ<br>
+      スマホ：左半分ドラッグで移動 ／ 右半分ドラッグで視点</div>
+    <button id="startBtn">バトル開始</button>
+    <p class="note">※「#コンパス 戦闘摂理解析システム」の非公式ファンアレンジです。ヒーローは雰囲気だけのラフ再現です。</p>
+  </div>
+</div>
+
+<div class="screen" id="pause" style="display:none">
+  <div class="card"><h1 style="font-size:28px">一時停止</h1><p class="sub">クリックで再開</p><button id="resumeBtn">再開</button></div>
+</div>
+
+<div class="screen" id="clear" style="display:none">
+  <div class="card">
+    <h1 style="font-size:32px">S ランク到達！</h1>
+    <p class="sub" id="cStats"></p>
+    <p class="sub" id="cFound" style="margin-bottom:8px"></p>
+    <ul id="log"></ul>
+    <button id="againBtn">もう一度</button>
+  </div>
+</div>
+
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------- 設定
+const RANKS = ['F', 'E', 'D', 'C', 'B', 'A', 'S'];
+const W = 5, HALF = W / 2;
+const BASE_L = 30;
+const ANOMALY_RATE = 0.6;
+const PI = Math.PI;
+const ALLY = 0x45b4ff, ENEMY = 0xff3a50;
+
+const ANOMALIES = [
+  { id: 'justice_watch', name: 'ジャスティスがこちらを見ている' },
+  { id: 'justice_down',  name: 'ジャスティスが倒れている' },
+  { id: 'justice_black', name: 'ジャスティスが黒い' },
+  { id: 'lilica_float',  name: 'リリカが浮いている' },
+  { id: 'mic_gone',      name: 'リリカのマイクがない' },
+  { id: 'stamp_text',    name: 'スタンプが「ドンマイ…」になっている' },
+  { id: 'atari_big',     name: 'アタリが巨大' },
+  { id: 'atari_red',     name: 'アタリの髪が赤い' },
+  { id: 'atari_gone',    name: 'アタリがいない' },
+  { id: 'scythe_gone',   name: '13の鎌がない' },
+  { id: 'thirteen_double', name: '奥にもう一人13がいる' },
+  { id: 'portal_red',    name: 'ポータルBが敵色（赤）' },
+  { id: 'portal_order',  name: 'ポータルの並びが A・C・B' },
+  { id: 'portal_gone',   name: 'ポータルBのリングがない' },
+  { id: 'portal_spin',   name: 'ポータルのリングが高速回転' },
+  { id: 'neon_red',      name: 'ステージのラインが赤い' },
+  { id: 'rank_mirror',   name: 'ランク表示が反転している' },
+  { id: 'timer_wrong',   name: 'タイマーが 0:00' },
+  { id: 'screen_end',    name: '「BATTLE START」が「BATTLE END」' },
+  { id: 'cards_fast',    name: 'カードが高速で回っている' },
+  { id: 'card_gold',     name: 'カードが1枚だけ金色' },
+  { id: 'pad_gone',      name: 'ジャンプパッドがない' },
+  { id: 'longer',        name: 'ステージが長い' },
+  { id: 'barrier_low',   name: '柵が低い' },
+  { id: 'sky_sunset',    name: '空が夕焼け' },
+  { id: 'beep',          name: 'どこかで占拠音が鳴っている' },
+];
+const nameOf = id => ANOMALIES.find(a => a.id === id)?.name ?? '';
+
+// ---------------------------------------------------------------- 描画基盤
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+document.body.prepend(renderer.domElement);
+
+const NIGHT = 0x0b0a24, SUNSET = 0xd9704a;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(NIGHT);
+scene.fog = new THREE.Fog(NIGHT, 18, 55);
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 200);
+camera.rotation.order = 'YXZ';
+
+const ambient = new THREE.AmbientLight(0xc8ccff, 1.1);
+const hemi = new THREE.HemisphereLight(0xa8c8ff, 0x302040, 0.8);
+const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+sun.position.set(3, 8, 2);
+scene.add(ambient, hemi, sun);
+
+// 星
+{
+  const pos = [];
+  for (let i = 0; i < 600; i++) {
+    const t = Math.random() * PI * 2, u = Math.random() * 0.9 + 0.05, r = 90;
+    pos.push(Math.cos(t) * Math.sin(u * PI / 2) * r, Math.cos(u * PI / 2) * r, Math.sin(t) * Math.sin(u * PI / 2) * r - 15);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.35, fog: false })));
+}
+
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+// ---------------------------------------------------------------- ヘルパー
+const lam = (color, extra = {}) => new THREE.MeshLambertMaterial({ color, flatShading: true, ...extra });
+const glow = color => new THREE.MeshBasicMaterial({ color });
+
+function box(parent, w, h, d, color, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), typeof color === 'number' ? lam(color) : color);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+function cyl(parent, rt, rb, h, color, x = 0, y = 0, z = 0, seg = 8) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), typeof color === 'number' ? lam(color) : color);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+function ball(parent, r, color, x = 0, y = 0, z = 0, detail = 1) {
+  const m = new THREE.Mesh(new THREE.IcosahedronGeometry(r, detail), typeof color === 'number' ? lam(color) : color);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+
+const texCache = new Map();
+function canvasTex(key, w, h, draw) {
+  if (texCache.has(key)) return texCache.get(key);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  texCache.set(key, t);
+  return t;
+}
+function textPlane(parent, key, w, h, pw, ph, draw, opts = {}) {
+  const tex = canvasTex(key, w, h, draw);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: !!opts.transparent, side: opts.double ? THREE.DoubleSide : THREE.FrontSide });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), mat);
+  parent.add(m);
+  return m;
+}
+const FONT = '"Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif';
+const hex = n => '#' + n.toString(16).padStart(6, '0');
+
+function tiledTex(key, size, draw, rx, ry) {
+  const t = canvasTex(key, size, size, draw).clone();
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.userData.temp = true;
+  t.needsUpdate = true;
+  return t;
+}
+const drawFloor = neon => (g, w, h) => {
+  g.fillStyle = '#1a1d3a'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#20244a'; g.fillRect(6, 6, w - 12, h - 12);
+  g.strokeStyle = neon; g.globalAlpha = 0.55; g.lineWidth = 3; g.strokeRect(0, 0, w, h);
+};
+
+function dispose(obj) {
+  obj.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) {
+      const ms = Array.isArray(o.material) ? o.material : [o.material];
+      ms.forEach(m => { if (m.map?.userData.temp) m.map.dispose(); m.dispose(); });
+    }
+  });
+}
+
+// ---------------------------------------------------------------- ヒーロー（ローカル +z が正面）
+function makeJustice(parent, color = 0xf2f2f6) {
+  const g = new THREE.Group();
+  const dark = 0x3a3f50;
+  box(g, 0.18, 0.8, 0.22, dark, -0.16, 0.4, 0);
+  box(g, 0.18, 0.8, 0.22, dark, 0.16, 0.4, 0);
+  box(g, 0.62, 0.62, 0.4, color, 0, 1.1, 0);
+  box(g, 0.16, 0.12, 0.02, glow(0x5fd0ff), 0, 1.18, 0.21);
+  box(g, 0.24, 0.2, 0.3, color, -0.44, 1.32, 0);
+  box(g, 0.24, 0.2, 0.3, color, 0.44, 1.32, 0);
+  box(g, 0.15, 0.6, 0.18, dark, -0.44, 0.95, 0);
+  box(g, 0.15, 0.6, 0.18, dark, 0.44, 0.95, 0);
+  box(g, 0.4, 0.32, 0.36, color, 0, 1.6, 0);
+  box(g, 0.34, 0.08, 0.02, glow(0xff3040), 0, 1.62, 0.185);
+  box(g, 0.04, 0.18, 0.04, dark, 0.12, 1.84, 0);
+  parent.add(g);
+  return g;
+}
+function makeLilica(parent, withMic = true) {
+  const g = new THREE.Group();
+  const pink = 0xff6fb5, hair = 0xffa8d6, skin = 0xffdcc4;
+  cyl(g, 0.035, 0.035, 0.6, 0xffffff, -0.08, 0.3, 0, 6);
+  cyl(g, 0.035, 0.035, 0.6, 0xffffff, 0.08, 0.3, 0, 6);
+  cyl(g, 0.12, 0.36, 0.5, pink, 0, 0.8, 0, 10);
+  box(g, 0.28, 0.32, 0.18, pink, 0, 1.18, 0);
+  box(g, 0.08, 0.08, 0.02, 0xffffff, 0, 1.24, 0.095);
+  ball(g, 0.16, skin, 0, 1.5, 0);
+  const h = ball(g, 0.18, hair, 0, 1.55, -0.04); h.scale.set(1, 0.95, 1);
+  for (const s of [-1, 1]) {
+    const t = ball(g, 0.1, hair, s * 0.24, 1.32, -0.04); t.scale.set(0.8, 2.2, 0.8);
+  }
+  box(g, 0.03, 0.04, 0.02, 0x302040, -0.055, 1.5, 0.15);
+  box(g, 0.03, 0.04, 0.02, 0x302040, 0.055, 1.5, 0.15);
+  const armR = box(g, 0.07, 0.36, 0.07, skin, 0.19, 1.2, 0.08); armR.rotation.x = -1.0;
+  box(g, 0.07, 0.36, 0.07, skin, -0.19, 1.05, 0);
+  if (withMic) {
+    cyl(g, 0.02, 0.015, 0.18, 0x666a78, 0.19, 1.36, 0.24, 6);
+    ball(g, 0.045, 0x9aa0b0, 0.19, 1.47, 0.24, 0);
+  }
+  parent.add(g);
+  return g;
+}
+function makeAtari(parent, hairColor = 0x2a6cff) {
+  const g = new THREE.Group();
+  const skin = 0xf6cfae;
+  box(g, 0.15, 0.8, 0.18, 0x22243a, -0.1, 0.4, 0);
+  box(g, 0.15, 0.8, 0.18, 0x22243a, 0.1, 0.4, 0);
+  box(g, 0.44, 0.56, 0.26, 0xf4f4f8, 0, 1.1, 0);
+  box(g, 0.1, 0.5, 0.02, 0x2a6cff, 0, 1.1, 0.135);
+  box(g, 0.11, 0.5, 0.12, 0xf4f4f8, -0.28, 1.1, 0);
+  box(g, 0.11, 0.5, 0.12, 0xf4f4f8, 0.28, 1.1, 0);
+  ball(g, 0.15, skin, 0, 1.55, 0);
+  box(g, 0.035, 0.04, 0.02, 0x101020, -0.05, 1.56, 0.145);
+  box(g, 0.035, 0.04, 0.02, 0x101020, 0.05, 1.56, 0.145);
+  const hm = lam(hairColor);
+  ball(g, 0.16, hm, 0, 1.62, -0.03, 0);
+  for (let i = 0; i < 7; i++) {
+    const c = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.24, 5), hm);
+    const a = (i / 6 - 0.5) * 2.4;
+    c.position.set(Math.sin(a) * 0.12, 1.72, -0.06 + Math.cos(a) * 0.02);
+    c.rotation.set(-0.6, 0, -a * 0.6);
+    g.add(c);
+  }
+  parent.add(g);
+  return g;
+}
+function makeThirteen(parent, withScythe = true) {
+  const g = new THREE.Group();
+  const cloak = 0x1a1622;
+  cyl(g, 0.16, 0.46, 1.45, cloak, 0, 0.725, 0, 9);
+  const hood = ball(g, 0.2, cloak, 0, 1.58, -0.02); hood.scale.set(1, 1.15, 1);
+  ball(g, 0.12, 0xe8e4f0, 0, 1.54, 0.08);
+  box(g, 0.03, 0.03, 0.02, glow(0xff2a3a), -0.04, 1.56, 0.19);
+  box(g, 0.03, 0.03, 0.02, glow(0xff2a3a), 0.04, 1.56, 0.19);
+  if (withScythe) {
+    cyl(g, 0.025, 0.025, 2.1, 0x5a4a5e, 0.38, 1.05, 0.1, 6);
+    const b1 = box(g, 0.08, 0.03, 0.55, 0xc8ccd8, 0.38, 2.05, 0.32); b1.rotation.x = 0.25;
+    const b2 = box(g, 0.08, 0.03, 0.25, 0xc8ccd8, 0.38, 1.94, 0.66); b2.rotation.x = 0.9;
+  }
+  parent.add(g);
+  return g;
+}
+
+// ---------------------------------------------------------------- ステージ小物
+function makeGate(parent, z, facing, neon) {
+  const g = new THREE.Group(); g.position.z = z; g.rotation.y = facing; parent.add(g);
+  for (const s of [-1, 1]) {
+    box(g, 0.4, 3.4, 0.4, 0x2a2e58, s * (HALF - 0.2), 1.7, 0);
+    box(g, 0.06, 3.2, 0.06, glow(neon), s * (HALF - 0.42), 1.6, 0.2);
+  }
+  box(g, W, 0.4, 0.4, 0x2a2e58, 0, 3.4, 0);
+  box(g, W - 0.8, 0.06, 0.06, glow(neon), 0, 3.18, 0.2);
+  const veil = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.8, 3.2),
+    new THREE.MeshBasicMaterial({ color: neon, transparent: true, opacity: 0.18, side: THREE.DoubleSide }));
+  veil.position.set(0, 1.6, 0); g.add(veil);
+  return g;
+}
+
+function makePortal(parent, x, z, letter, color, ring, upd, spin) {
+  const g = new THREE.Group(); g.position.set(x, 0, z); parent.add(g);
+  cyl(g, 0.7, 0.75, 0.1, 0x2a2e58, 0, 0.05, 0, 16);
+  cyl(g, 0.6, 0.6, 0.02, glow(color), 0, 0.11, 0, 16);
+  if (ring) {
+    const r = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.05, 6, 20), glow(color));
+    r.position.y = 1.1; g.add(r);
+    upd.push(dt => { r.rotation.y += dt * spin; });
+  }
+  const l = new THREE.PointLight(color, 4, 5, 1.2); l.position.y = 1; g.add(l);
+  const tag = textPlane(g, `portal:${letter}:${color}`, 128, 128, 0.6, 0.6, (c, cw, ch) => {
+    c.fillStyle = hex(color); c.beginPath(); c.arc(cw / 2, ch / 2, 58, 0, PI * 2); c.fill();
+    c.fillStyle = '#fff'; c.font = `bold 84px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(letter, cw / 2, ch / 2 + 4);
+  }, { transparent: true });
+  tag.position.y = 2.2;
+  return tag;
+}
+
+// ---------------------------------------------------------------- 1周分のステージ生成
+let level = null;
+let beepZ = null;
+
+function buildLevel(rankIdx, anomaly) {
+  if (level) { scene.remove(level.group); dispose(level.group); }
+  const A = id => anomaly === id;
+  const L = A('longer') ? 42 : BASE_L;
+  const neon = A('neon_red') ? ENEMY : ALLY;
+  const g = new THREE.Group();
+  const upd = [];
+  const billboards = [];
+
+  const sky = A('sky_sunset') ? SUNSET : NIGHT;
+  scene.background.set(sky);
+  scene.fog.color.set(sky);
+
+  // 床（ステージは周囲に少し張り出す）
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(W, L + 4),
+    new THREE.MeshLambertMaterial({ map: tiledTex('floor:' + neon, 128, drawFloor(hex(neon)), W / 1.25, (L + 4) / 1.25) }));
+  fl.rotation.x = -PI / 2; fl.position.set(0, 0, -L / 2); g.add(fl);
+  box(g, W + 6, 0.6, L + 10, 0x15183a, 0, -0.31, -L / 2);
+  // 柵
+  const bh = A('barrier_low') ? 0.3 : 0.8;
+  for (const s of [-1, 1]) {
+    box(g, 0.2, bh, L, 0x2a2e58, s * (HALF + 0.1), bh / 2, -L / 2);
+    box(g, 0.22, 0.05, L, glow(neon), s * (HALF + 0.1), bh + 0.02, -L / 2);
+  }
+
+  // ゲート
+  makeGate(g, 0.2, PI, ALLY);
+  makeGate(g, -L - 0.2, 0, ALLY);
+
+  // 大型スクリーン（奥のゲートの上）
+  {
+    const t1 = A('screen_end') ? 'BATTLE END' : 'BATTLE START';
+    const t2 = A('timer_wrong') ? '0:00' : '3:00';
+    const p = textPlane(g, `screen:${t1}:${t2}`, 512, 192, 4.2, 1.575, (c, cw, ch) => {
+      c.fillStyle = '#0d1030'; c.fillRect(0, 0, cw, ch);
+      c.strokeStyle = '#45b4ff'; c.lineWidth = 6; c.strokeRect(3, 3, cw - 6, ch - 6);
+      c.fillStyle = '#fff'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.font = `bold 54px ${FONT}`; c.fillText(t1, cw / 2, 64);
+      c.fillStyle = '#ffd257'; c.font = `bold 70px ${FONT}`; c.fillText(t2, cw / 2, 140);
+    });
+    p.position.set(0, 4.6, -L - 0.4);
+    box(g, 4.4, 1.75, 0.15, 0x2a2e58, 0, 4.6, -L - 0.5);
+  }
+
+  // ランク表示
+  {
+    const mirror = A('rank_mirror');
+    const r = RANKS[rankIdx];
+    const p = textPlane(g, `rank:${r}:${mirror}`, 256, 256, 0.9, 0.9, (c, cw, ch) => {
+      c.fillStyle = '#141838'; c.fillRect(0, 0, cw, ch);
+      c.strokeStyle = '#ffd257'; c.lineWidth = 8; c.strokeRect(4, 4, cw - 8, ch - 8);
+      if (mirror) { c.translate(cw, 0); c.scale(-1, 1); }
+      c.fillStyle = '#9aa0c8'; c.font = `bold 34px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText('RANK', cw / 2, 52);
+      c.fillStyle = '#ffd257'; c.font = `bold 150px ${FONT}`; c.fillText(r, cw / 2, 150);
+    });
+    p.position.set(-HALF + 0.3, 1.5, -3);
+    p.rotation.y = PI / 2 - 0.3;
+    cyl(g, 0.04, 0.04, 1.05, 0x2a2e58, -HALF + 0.3, 0.525, -3, 6);
+  }
+
+  // ポータル A / B / C
+  {
+    const letters = A('portal_order') ? ['A', 'C', 'B'] : ['A', 'B', 'C'];
+    const spin = A('portal_spin') ? 9 : 0.8;
+    const spots = [[-1.65, -8], [1.65, -15], [-1.65, -22]];
+    spots.forEach(([x, z], i) => {
+      const isB = letters[i] === 'B';
+      const color = isB && A('portal_red') ? ENEMY : ALLY;
+      const ring = !(isB && A('portal_gone'));
+      billboards.push(makePortal(g, x, z, letters[i], color, ring, upd, spin));
+    });
+    if (A('beep')) beepZ = -15;
+  }
+
+  // ジャンプパッド
+  if (!A('pad_gone')) {
+    const p = textPlane(g, 'pad', 128, 128, 1.2, 1.2, (c, cw, ch) => {
+      c.strokeStyle = '#7ff0c8'; c.lineWidth = 8;
+      for (const r of [56, 40]) { c.beginPath(); c.arc(cw / 2, ch / 2, r, 0, PI * 2); c.stroke(); }
+      c.fillStyle = '#7ff0c8';
+      c.beginPath(); c.moveTo(cw / 2, 34); c.lineTo(cw / 2 + 18, 58); c.lineTo(cw / 2 - 18, 58); c.fill();
+    }, { transparent: true });
+    p.rotation.x = -PI / 2; p.position.set(0.6, 0.012, -12);
+  }
+
+  // ヒーロー
+  const heroes = {};
+  {
+    const j = makeJustice(g, A('justice_black') ? 0x24242c : 0xf2f2f6);
+    j.position.set(1.6, 0, -5.5); j.rotation.y = -PI / 2 - 0.4;
+    if (A('justice_down')) { j.rotation.set(0, -PI / 2, PI / 2); j.position.set(1.4, 0.22, -5.5); }
+    if (A('justice_watch')) upd.push(() => { j.rotation.y = Math.atan2(camera.position.x - j.position.x, camera.position.z - j.position.z); });
+    heroes.justice = j;
+
+    const li = makeLilica(g, !A('mic_gone'));
+    li.position.set(-1.7, 0, -11.5); li.rotation.y = PI / 2 + 0.4;
+    if (A('lilica_float')) { let t = 0; upd.push(dt => { t += dt; li.position.y = 1.1 + Math.sin(t * 2) * 0.12; }); }
+    heroes.lilica = li;
+
+    if (!A('atari_gone')) {
+      const at = makeAtari(g, A('atari_red') ? 0xe02a30 : 0x2a6cff);
+      at.position.set(1.7, 0, -18.5); at.rotation.y = -PI / 2 - 0.4;
+      if (A('atari_big')) at.scale.setScalar(1.8);
+      heroes.atari = at;
+    }
+
+    const th = makeThirteen(g, !A('scythe_gone'));
+    th.position.set(-1.6, 0, -25.5); th.rotation.y = PI / 2 + 0.4;
+    heroes.thirteen = th;
+    if (A('thirteen_double')) {
+      const t2 = makeThirteen(g, true);
+      t2.position.set(0.9, 0, -L + 1.6); t2.rotation.y = 0;
+    }
+  }
+  // 名前タグ
+  const names = { justice: '忠臣ジャスティス', lilica: 'リリカ', atari: '十文字アタリ', thirteen: '13†サーティーン' };
+  for (const [k, h] of Object.entries(heroes)) {
+    const tag = textPlane(g, 'name:' + k, 256, 48, 1.3, 0.24, (c, cw, ch) => {
+      c.fillStyle = 'rgba(20,24,56,0.85)'; c.fillRect(0, 0, cw, ch);
+      c.fillStyle = '#fff'; c.font = `bold 28px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(names[k], cw / 2, ch / 2 + 1);
+    }, { transparent: true });
+    const top = k === 'thirteen' ? 2.35 : 2.1;
+    tag.position.set(h.position.x, top * h.scale.y, h.position.z);
+    if (k === 'lilica' && A('lilica_float')) upd.push(() => { tag.position.y = h.position.y + top; });
+    billboards.push(tag);
+  }
+  // リリカのスタンプ
+  {
+    const txt = A('stamp_text') ? 'ドンマイ…' : 'よろしく！';
+    const st = textPlane(g, 'stamp:' + txt, 256, 128, 0.8, 0.4, (c, cw, ch) => {
+      c.fillStyle = '#fff'; c.beginPath(); c.roundRect(4, 4, cw - 8, ch - 30, 24); c.fill();
+      c.beginPath(); c.moveTo(cw / 2 - 14, ch - 28); c.lineTo(cw / 2, ch - 4); c.lineTo(cw / 2 + 14, ch - 28); c.fill();
+      c.fillStyle = '#ff4f9e'; c.font = `bold 40px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(txt, cw / 2, (ch - 26) / 2 + 4);
+    }, { transparent: true });
+    st.position.set(-1.7, 2.55, -11.5);
+    upd.push(() => { st.position.y = heroes.lilica.position.y + 2.55; });
+    billboards.push(st);
+  }
+
+  // 空中のカード
+  {
+    const cols = [0xe84a5f, 0x3a8dff, 0x3cc47c, 0xa45cff];
+    const sp = A('cards_fast') ? -8 : 0.9;
+    cols.forEach((col, i) => {
+      const gold = A('card_gold') && i === 2;
+      const c = textPlane(g, `card:${gold ? 'gold' : col}`, 128, 180, 0.6, 0.84, (cx, cw, ch) => {
+        cx.fillStyle = gold ? '#e8b830' : hex(col); cx.fillRect(0, 0, cw, ch);
+        cx.fillStyle = 'rgba(255,255,255,0.85)'; cx.fillRect(12, 12, cw - 24, ch - 60);
+        cx.fillStyle = gold ? '#e8b830' : hex(col); cx.beginPath(); cx.arc(cw / 2, 70, 30, 0, PI * 2); cx.fill();
+        cx.fillStyle = '#fff'; cx.font = `bold 26px ${FONT}`; cx.textAlign = 'center'; cx.fillText('CARD', cw / 2, ch - 18);
+      }, { double: true });
+      c.position.set(0, 3.2, -7 - i * 5.5);
+      const off = i * 0.8;
+      upd.push(dt => { c.rotation.y += dt * sp; c.position.y = 3.2 + Math.sin(performance.now() / 600 + off) * 0.1; });
+    });
+  }
+
+  upd.push(() => billboards.forEach(b => b.quaternion.copy(camera.quaternion)));
+
+  scene.add(g);
+  level = { group: g, L, anomaly, upd };
+}
+
+// ---------------------------------------------------------------- サウンド
+let ac = null, beepGain = null, noiseBuf = null;
+function initAudio() {
+  if (ac) return;
+  try {
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    const hum = ac.createOscillator(); hum.type = 'triangle'; hum.frequency.value = 110;
+    const hg = ac.createGain(); hg.gain.value = 0.012;
+    hum.connect(hg).connect(ac.destination); hum.start();
+    beepGain = ac.createGain(); beepGain.gain.value = 0;
+    const o = ac.createOscillator(); o.type = 'square'; o.frequency.value = 1760;
+    const og = ac.createGain(); og.gain.value = 0.05;
+    o.connect(og).connect(beepGain).connect(ac.destination); o.start();
+    noiseBuf = ac.createBuffer(1, ac.sampleRate * 0.1, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+  } catch (e) { ac = null; }
+}
+function footstep() {
+  if (!ac) return;
+  const s = ac.createBufferSource(); s.buffer = noiseBuf;
+  const f = ac.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900 + Math.random() * 300;
+  const gn = ac.createGain(); gn.gain.value = 0.4;
+  s.connect(f).connect(gn).connect(ac.destination); s.start();
+}
+
+// ---------------------------------------------------------------- 入力
+const keys = {};
+addEventListener('keydown', e => { keys[e.code] = true; });
+addEventListener('keyup', e => { keys[e.code] = false; });
+let yaw = 0, pitch = 0;
+const canvas = renderer.domElement;
+let dragging = false;
+function look(dx, dy, k = 0.0022) {
+  yaw -= dx * k;
+  pitch = Math.max(-1.2, Math.min(1.2, pitch - dy * k));
+}
+const lockPointer = () => { try { canvas.requestPointerLock()?.catch?.(() => {}); } catch (e) {} };
+canvas.addEventListener('mousedown', () => {
+  dragging = true;
+  if (state === 'play' && !document.pointerLockElement) lockPointer();
+});
+addEventListener('mouseup', () => { dragging = false; });
+addEventListener('mousemove', e => {
+  if (state !== 'play') return;
+  if (document.pointerLockElement === canvas || dragging) look(e.movementX, e.movementY);
+});
+let wasLocked = false;
+document.addEventListener('pointerlockchange', () => {
+  const locked = document.pointerLockElement === canvas;
+  if (!locked && wasLocked && state === 'play') setPause(true);
+  wasLocked = locked;
+});
+
+const touchMove = { id: null, ox: 0, oy: 0, x: 0, y: 0 };
+const touchLook = { id: null, x: 0, y: 0 };
+const stick = document.getElementById('stick');
+canvas.addEventListener('touchstart', e => {
+  for (const t of e.changedTouches) {
+    if (t.clientX < innerWidth / 2 && touchMove.id === null) {
+      Object.assign(touchMove, { id: t.identifier, ox: t.clientX, oy: t.clientY, x: 0, y: 0 });
+      stick.style.display = 'block'; stick.style.left = (t.clientX - 55) + 'px'; stick.style.top = (t.clientY - 55) + 'px';
+    } else if (touchLook.id === null) {
+      Object.assign(touchLook, { id: t.identifier, x: t.clientX, y: t.clientY });
+    }
+  }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === touchMove.id) {
+      let dx = t.clientX - touchMove.ox, dy = t.clientY - touchMove.oy;
+      const len = Math.hypot(dx, dy), max = 50;
+      if (len > max) { dx *= max / len; dy *= max / len; }
+      touchMove.x = dx / max; touchMove.y = dy / max;
+      stick.firstChild.style.transform = `translate(${dx}px,${dy}px)`;
+    } else if (t.identifier === touchLook.id) {
+      if (state === 'play') look(t.clientX - touchLook.x, t.clientY - touchLook.y, 0.005);
+      touchLook.x = t.clientX; touchLook.y = t.clientY;
+    }
+  }
+  e.preventDefault();
+}, { passive: false });
+const endTouch = e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === touchMove.id) { touchMove.id = null; touchMove.x = touchMove.y = 0; stick.style.display = 'none'; stick.firstChild.style.transform = ''; }
+    if (t.identifier === touchLook.id) touchLook.id = null;
+  }
+};
+canvas.addEventListener('touchend', endTouch);
+canvas.addEventListener('touchcancel', endTouch);
+
+// ---------------------------------------------------------------- ゲーム進行
+const $ = id => document.getElementById(id);
+let state = 'title';
+let rank = 0, misses = 0, elapsed = 0, loopTime = 0, lastAnomaly = null;
+let stepAcc = 0, bob = 0;
+let found = new Set();
+try { found = new Set(JSON.parse(localStorage.getItem('compass-found') || '[]')); } catch (e) {}
+const saveFound = () => { try { localStorage.setItem('compass-found', JSON.stringify([...found])); } catch (e) {} };
+
+function pickAnomaly() {
+  if (rank === 0) return null; // F ランクは必ず「いつものステージ」
+  if (Math.random() > ANOMALY_RATE) return null;
+  let a;
+  do { a = ANOMALIES[Math.floor(Math.random() * ANOMALIES.length)].id; } while (a === lastAnomaly);
+  return a;
+}
+
+function enterLoop() {
+  const a = pickAnomaly();
+  if (a) lastAnomaly = a;
+  beepZ = null;
+  buildLevel(rank, a);
+  camera.position.set(0, 1.6, -1.8);
+  yaw = 0; pitch = 0; loopTime = 0;
+  $('hRank').textContent = RANKS[rank];
+}
+
+function decide(choice) {
+  if (state !== 'play') return;
+  const had = level.anomaly;
+  const correct = (choice === 'back') === !!had;
+  let msg = '', ng = false;
+  if (correct) {
+    if (choice === 'back') { found.add(had); saveFound(); }
+    rank++;
+  } else {
+    misses++;
+    rank = 0;
+    ng = true;
+    msg = had ? `見逃した異変：${nameOf(had)}` : '異変はなかった…';
+  }
+  $('hMiss').textContent = misses;
+  if (rank >= RANKS.length - 1) return finish();
+  transition('RANK ' + RANKS[rank], msg, ng);
+}
+
+function transition(big, msg, ng) {
+  state = 'transition';
+  const f = $('fade');
+  $('fBig').textContent = big; $('fMsg').textContent = msg; $('fMsg').className = 'msg' + (ng ? ' ng' : '');
+  f.style.opacity = 1;
+  setTimeout(() => {
+    enterLoop();
+    setTimeout(() => { f.style.opacity = 0; state = 'play'; }, ng ? 1600 : 500);
+  }, 400);
+}
+
+function finish() {
+  state = 'clear';
+  document.exitPointerLock?.();
+  const f = $('fade');
+  $('fBig').textContent = 'RANK S'; $('fMsg').textContent = ''; f.style.opacity = 1;
+  const m = Math.floor(elapsed / 60), s = Math.floor(elapsed % 60);
+  $('cStats').textContent = `タイム ${m}:${String(s).padStart(2, '0')}　／　やり直し ${misses} 回`;
+  $('cFound').textContent = `発見した異変 ${found.size} / ${ANOMALIES.length}`;
+  $('log').innerHTML = ANOMALIES.map(a => found.has(a.id) ? `<li class="found">✔ ${a.name}</li>` : '<li>？？？</li>').join('');
+  setTimeout(() => { $('clear').style.display = 'flex'; f.style.opacity = 0; }, 900);
+}
+
+function startGame() {
+  initAudio();
+  ac?.resume?.();
+  rank = 0; misses = 0; elapsed = 0; lastAnomaly = null;
+  $('hMiss').textContent = 0;
+  ['title', 'clear', 'pause'].forEach(id => $(id).style.display = 'none');
+  $('hud').style.display = 'block'; $('cross').style.display = 'block';
+  enterLoop();
+  state = 'play';
+  if (!('ontouchstart' in window)) lockPointer();
+}
+function setPause(p) {
+  if (p) { state = 'pause'; $('pause').style.display = 'flex'; }
+  else { $('pause').style.display = 'none'; state = 'play'; lockPointer(); }
+}
+$('startBtn').onclick = startGame;
+$('againBtn').onclick = startGame;
+$('resumeBtn').onclick = () => setPause(false);
+
+// ---------------------------------------------------------------- ループ
+const clock = new THREE.Clock();
+function tick() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  camera.rotation.set(pitch, yaw, 0);
+  if (state === 'play' && level) {
+    elapsed += dt; loopTime += dt;
+    const m = Math.floor(elapsed / 60), s = Math.floor(elapsed % 60);
+    $('hTime').textContent = `${m}:${String(s).padStart(2, '0')}`;
+
+    let fx = 0, fz = 0;
+    if (keys.KeyW || keys.ArrowUp) fz -= 1;
+    if (keys.KeyS || keys.ArrowDown) fz += 1;
+    if (keys.KeyA || keys.ArrowLeft) fx -= 1;
+    if (keys.KeyD || keys.ArrowRight) fx += 1;
+    fx += touchMove.x; fz += touchMove.y;
+    const len = Math.hypot(fx, fz);
+    if (len > 1) { fx /= len; fz /= len; }
+    const speed = (keys.ShiftLeft || keys.ShiftRight) ? 6 : 4;
+    const sin = Math.sin(yaw), cos = Math.cos(yaw);
+    const p = camera.position;
+    p.x += (fx * cos + fz * sin) * speed * dt;
+    p.z += (-fx * sin + fz * cos) * speed * dt;
+    p.x = Math.max(-HALF + 0.4, Math.min(HALF - 0.4, p.x));
+    p.z = Math.max(-level.L + 0.3, Math.min(-0.3, p.z));
+    const moving = Math.min(len, 1) * speed;
+    bob += moving * dt * 2.2;
+    p.y = 1.6 + Math.sin(bob * 2) * 0.025 * Math.min(moving, 1);
+    stepAcc += moving * dt;
+    if (stepAcc > 0.9) { stepAcc = 0; footstep(); }
+
+    if (beepGain) {
+      const on = beepZ !== null && (loopTime % 1.2) < 0.08;
+      beepGain.gain.value = on ? Math.max(0.2, 1 - Math.abs(p.z - beepZ) / 16) : 0;
+    }
+
+    if (p.z < -level.L + 0.9) decide('forward');
+    else if (p.z > -0.9 && loopTime > 1.2) decide('back');
+  } else if (beepGain) beepGain.gain.value = 0;
+
+  level?.upd.forEach(f => f(dt));
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+
+// タイトル背景（?a=異変ID で確認用にその異変を表示）
+buildLevel(0, new URLSearchParams(location.search).get('a'));
+camera.position.set(0, 1.6, -1.8);
+window.__dbg = { camera, view: (y, p) => { yaw = y; pitch = p; } };
+tick();
+</script>
+</body>
+</html>
