@@ -68,7 +68,7 @@
 <div class="screen" id="title">
   <div class="card">
     <h1>異変<em>ステージ</em></h1>
-    <p class="sub">いつものバトルステージ。……のはず。</p>
+    <p class="sub">ステージ：デラクランクストリート。いつもの街並み……のはず。</p>
     <div class="rules">
       ・ 異変を見つけたら、<span class="ng">すぐに引き返す</span>（後ろのゲートへ）<br>
       ・ 異変がなければ、<span class="ok">先へ進む</span>（奥のゲートへ）<br>
@@ -110,8 +110,7 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 // ---------------------------------------------------------------- 設定
 const RANKS = ['F', 'E', 'D', 'C', 'B', 'A', 'S'];
-const W = 5, HALF = W / 2;
-const BASE_L = 30;
+const W = 6, HALF = W / 2;
 const ANOMALY_RATE = 0.6;
 const PI = Math.PI;
 const ALLY = 0x45b4ff, ENEMY = 0xff3a50;
@@ -143,6 +142,9 @@ const ANOMALIES = [
   { id: 'barrier_low',   name: '柵が低い' },
   { id: 'sky_sunset',    name: '空が夕焼け' },
   { id: 'beep',          name: 'どこかで占拠音が鳴っている' },
+  { id: 'building_red',  name: '窓が真っ赤なビルがある' },
+  { id: 'sign_text',     name: '看板が「でらストレート商店街」' },
+  { id: 'lamp_off',      name: '街灯がひとつ消えている' },
 ];
 const nameOf = id => ANOMALIES.find(a => a.id === id)?.name ?? '';
 
@@ -454,8 +456,8 @@ function makeHero(parent, slot, fallback, tint = null, hairTint = null) {
 }
 
 // ---------------------------------------------------------------- ステージ小物
-function makeGate(parent, z, facing, neon) {
-  const g = new THREE.Group(); g.position.z = z; g.rotation.y = facing; parent.add(g);
+function makeGate(parent, x, z, facing, neon) {
+  const g = new THREE.Group(); g.position.set(x, 0, z); g.rotation.y = facing; parent.add(g);
   for (const s of [-1, 1]) {
     box(g, 0.4, 3.4, 0.4, 0x2a2e58, s * (HALF - 0.2), 1.7, 0);
     box(g, 0.06, 3.2, 0.06, glow(neon), s * (HALF - 0.42), 1.6, 0.2);
@@ -487,14 +489,37 @@ function makePortal(parent, x, z, letter, color, ring, upd, spin) {
   return tag;
 }
 
+// 毎周まったく同じ街並みにするため、乱数は固定シード
+function seeded(seed) {
+  return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+const FACADES = [
+  ['#2b2f4a', '#ffd98a'], ['#3a2c3e', '#9fe0ff'], ['#24343a', '#ffb6e0'],
+];
+function facadeTex(i, red) {
+  const [base, lit] = red ? ['#2b2230', '#ff3040'] : FACADES[i];
+  const key = `facade:${i}:${red}`;
+  return tiledTex(key, 64, (c, w, h) => {
+    c.fillStyle = base; c.fillRect(0, 0, w, h);
+    const r = seeded(i + 7);
+    for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) {
+      c.fillStyle = red || r() < 0.55 ? lit : '#11131f';
+      c.fillRect(6 + x * 32, 6 + y * 32, 20, 20);
+    }
+  }, 1, 1);
+}
+
 // ---------------------------------------------------------------- 1周分のステージ生成
+// 道はクランク状：まっすぐ → 右へ折れる → また前へ（x, z は道の中心線）
+//   (0,0) → (0,-14) → (12,-14) → (12,END)
 let level = null;
-let beepZ = null;
+let beepPos = null;
+const roadRects = endZ => [[-3, 3, -17, 0], [-3, 15, -17, -11], [9, 15, endZ, -11]]; // xmin,xmax,zmin,zmax
 
 function buildLevel(rankIdx, anomaly) {
   if (level) { scene.remove(level.group); dispose(level.group); }
   const A = id => anomaly === id;
-  const L = A('longer') ? 42 : BASE_L;
+  const END = A('longer') ? -38 : -28;
   const neon = A('neon_red') ? ENEMY : ALLY;
   const g = new THREE.Group();
   const upd = [];
@@ -504,23 +529,95 @@ function buildLevel(rankIdx, anomaly) {
   scene.background.set(sky);
   scene.fog.color.set(sky);
 
-  // 床（ステージは周囲に少し張り出す）
-  const fl = new THREE.Mesh(new THREE.PlaneGeometry(W, L + 4),
-    new THREE.MeshLambertMaterial({ map: tiledTex('floor:' + neon, 128, drawFloor(hex(neon)), W / 1.25, (L + 4) / 1.25) }));
-  fl.rotation.x = -PI / 2; fl.position.set(0, 0, -L / 2); g.add(fl);
-  box(g, W + 6, 0.6, L + 10, 0x15183a, 0, -0.31, -L / 2);
-  // 柵
+  // 地面と道（重ならない3枚に分けて貼る）
+  box(g, 60, 0.6, 80, 0x15183a, 6, -0.31, -14);
+  for (const [x0, x1, z0, z1] of [[-3, 3, -11, 0], [-3, 15, -17, -11], [9, 15, END, -17]]) {
+    const w = x1 - x0, d = z1 - z0;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d),
+      new THREE.MeshLambertMaterial({ map: tiledTex('floor:' + neon, 128, drawFloor(hex(neon)), w / 1.5, d / 1.5) }));
+    m.rotation.x = -PI / 2; m.position.set((x0 + x1) / 2, 0, (z0 + z1) / 2); g.add(m);
+  }
+
+  // 柵（道の外周）
   const bh = A('barrier_low') ? 0.3 : 0.8;
-  for (const s of [-1, 1]) {
-    box(g, 0.2, bh, L, 0x2a2e58, s * (HALF + 0.1), bh / 2, -L / 2);
-    box(g, 0.22, 0.05, L, glow(neon), s * (HALF + 0.1), bh + 0.02, -L / 2);
+  for (const [x0, z0, x1, z1] of [[-3, 0, -3, -17], [-3, -17, 9, -17], [9, -17, 9, END], [15, END, 15, -11], [15, -11, 3, -11], [3, -11, 3, 0]]) {
+    const len = Math.hypot(x1 - x0, z1 - z0), cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    const vertical = x0 === x1;
+    box(g, vertical ? 0.2 : len + 0.2, bh, vertical ? len + 0.2 : 0.2, 0x2a2e58, cx, bh / 2, cz);
+    box(g, vertical ? 0.22 : len + 0.22, 0.05, vertical ? len + 0.22 : 0.22, glow(neon), cx, bh + 0.02, cz);
+  }
+
+  // 高台（C地点の脇、迂回路の先）
+  const reserved = [[3.5, 8.5, -22, -17.6]];
+  {
+    box(g, 5, 1.6, 4.2, 0x262a52, 6, 0.8, -19.8);
+    box(g, 5.02, 0.05, 0.05, glow(neon), 6, 1.62, -17.72);
+    for (let i = 0; i < 4; i++) box(g, 1.2, 0.4 * (i + 1), 0.5, 0x2a2e58, 2.8, 0.2 * (i + 1), -21.6 + i * 0.5);
+  }
+
+  // 街並み（ビル）
+  {
+    const rects = roadRects(END).map(([a, b, c, d]) => [a - 1.2, b + 1.2, c - 1.2, d + 1.2]).concat(reserved);
+    const placed = [];
+    const hit = (r, list) => list.some(q => r[0] < q[1] && r[1] > q[0] && r[2] < q[3] && r[3] > q[2]);
+    const sides = [ // 起点, 向き, 長さ, 外向き法線
+      [-3, 0, 0, -1, 17, -1, 0], [-3, -17, 1, 0, 12, 0, -1], [9, -17, 0, -1, -17 - END + 2, -1, 0],
+      [15, -11, 0, -1, -11 - END + 2, 1, 0], [3, -11, 1, 0, 12, 0, 1], [3, 0, 0, -1, 11, 1, 0],
+      [-6, 1, 1, 0, 12, 0, 1], [5, END, 1, 0, 14, 0, -1],
+    ];
+    let n = 0;
+    sides.forEach(([sx, sz, dx, dz, len, nx, nz], si) => {
+      const r = seeded(100 + si);
+      for (let t = 0; t < len;) {
+        const w = 3 + r() * 3, d = 4 + r() * 4, h = 5 + r() * 12, v = Math.floor(r() * 3);
+        const along = t + w / 2, off = 1.5 + d / 2;
+        const cx = sx + dx * along + nx * off, cz = sz + dz * along + nz * off;
+        const wx = dx ? w : d, wz = dx ? d : w;
+        const fp = [cx - wx / 2, cx + wx / 2, cz - wz / 2, cz + wz / 2];
+        t += w + 0.3;
+        if (hit(fp, rects) || hit(fp, placed)) continue;
+        placed.push(fp);
+        const red = A('building_red') && n === 3;
+        const tex = facadeTex(v, red); tex.repeat.set(Math.max(1, Math.round(w / 2)), Math.max(1, Math.round(h / 2)));
+        box(g, wx, h, wz, new THREE.MeshLambertMaterial({ map: tex }), cx, h / 2, cz);
+        n++;
+      }
+    });
+  }
+
+  // 商店街の看板（1本目の突き当たり）
+  {
+    const txt = A('sign_text') ? 'でらストレート商店街' : 'でらクランク商店街';
+    const p = textPlane(g, 'shopsign:' + txt, 512, 112, 5.2, 1.14, (c, cw, ch) => {
+      c.fillStyle = '#c8282e'; c.fillRect(0, 0, cw, ch);
+      c.strokeStyle = '#ffd257'; c.lineWidth = 6; c.strokeRect(5, 5, cw - 10, ch - 10);
+      c.fillStyle = '#fff4d0'; c.font = `bold 58px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(txt, cw / 2, ch / 2 + 3);
+    });
+    p.position.set(0, 4.6, -18.3);
+    for (const s of [-1, 1]) cyl(g, 0.08, 0.08, 5.2, 0x3a3e60, s * 2.4, 2.6, -18.4, 6);
+  }
+
+  // 街灯
+  {
+    const spots = [[-3.6, -4], [-3.6, -10], [3.6, -5], [-1, -17.6], [8.4, -21], [8.4, -26], [15.6, -14], [15.6, -21], [7, -10.4]];
+    spots.forEach(([x, z], i) => {
+      if (z < END) return;
+      cyl(g, 0.06, 0.08, 3.6, 0x3a3e60, x, 1.8, z, 6);
+      const off = A('lamp_off') && i === 3;
+      ball(g, 0.2, off ? lam(0x333344) : glow(0xfff0c8), x, 3.7, z, 1);
+    });
+    for (const [x, z] of [[0, -5], [0, -13], [6, -14], [12, -18], [12, -25]]) {
+      const l = new THREE.PointLight(0xfff0d8, 6, 12, 1.3);
+      l.position.set(x, 3.2, z); g.add(l);
+    }
   }
 
   // ゲート
-  makeGate(g, 0.2, PI, ALLY);
-  makeGate(g, -L - 0.2, 0, ALLY);
+  makeGate(g, 0, 0.2, PI, ALLY);
+  makeGate(g, 12, END - 0.2, 0, ALLY);
 
-  // 大型スクリーン（奥のゲートの上）
+  // 大型スクリーン（ゴール側ゲートの上）
   {
     const t1 = A('screen_end') ? 'BATTLE END' : 'BATTLE START';
     const t2 = A('timer_wrong') ? '0:00' : '3:00';
@@ -531,8 +628,8 @@ function buildLevel(rankIdx, anomaly) {
       c.font = `bold 54px ${FONT}`; c.fillText(t1, cw / 2, 64);
       c.fillStyle = '#ffd257'; c.font = `bold 70px ${FONT}`; c.fillText(t2, cw / 2, 140);
     });
-    p.position.set(0, 4.6, -L - 0.4);
-    box(g, 4.4, 1.75, 0.15, 0x2a2e58, 0, 4.6, -L - 0.5);
+    p.position.set(12, 4.6, END - 0.4);
+    box(g, 4.4, 1.75, 0.15, 0x2a2e58, 12, 4.6, END - 0.5);
   }
 
   // ランク表示
@@ -547,23 +644,23 @@ function buildLevel(rankIdx, anomaly) {
       c.fillText('RANK', cw / 2, 52);
       c.fillStyle = '#ffd257'; c.font = `bold 150px ${FONT}`; c.fillText(r, cw / 2, 150);
     });
-    p.position.set(-HALF + 0.3, 1.5, -3);
+    p.position.set(-2.6, 1.5, -3);
     p.rotation.y = PI / 2 - 0.3;
-    cyl(g, 0.04, 0.04, 1.05, 0x2a2e58, -HALF + 0.3, 0.525, -3, 6);
+    cyl(g, 0.04, 0.04, 1.05, 0x2a2e58, -2.6, 0.525, -3, 6);
   }
 
-  // ポータル A / B / C
+  // ポータル A〜E（C はクランクの真ん中）
   {
-    const letters = A('portal_order') ? ['A', 'C', 'B'] : ['A', 'B', 'C'];
+    const letters = A('portal_order') ? ['A', 'C', 'B', 'D', 'E'] : ['A', 'B', 'C', 'D', 'E'];
     const spin = A('portal_spin') ? 9 : 0.8;
-    const spots = [[-1.65, -8], [1.65, -15], [-1.65, -22]];
+    const spots = [[-1.6, -5], [1.6, -9.5], [6, -14], [10.4, -20], [13.6, -24.5]];
     spots.forEach(([x, z], i) => {
       const isB = letters[i] === 'B';
       const color = isB && A('portal_red') ? ENEMY : ALLY;
       const ring = !(isB && A('portal_gone'));
       billboards.push(makePortal(g, x, z, letters[i], color, ring, upd, spin));
     });
-    if (A('beep')) beepZ = -15;
+    if (A('beep')) beepPos = { x: 6, z: -14 };
   }
 
   // ジャンプパッド
@@ -574,36 +671,36 @@ function buildLevel(rankIdx, anomaly) {
       c.fillStyle = '#7ff0c8';
       c.beginPath(); c.moveTo(cw / 2, 34); c.lineTo(cw / 2 + 18, 58); c.lineTo(cw / 2 - 18, 58); c.fill();
     }, { transparent: true });
-    p.rotation.x = -PI / 2; p.position.set(0.6, 0.012, -12);
+    p.rotation.x = -PI / 2; p.position.set(3.2, 0.012, -15.8);
   }
 
   // ヒーロー
   const heroes = {};
   {
     const j = makeHero(g, 'justice', () => makeJustice(g, A('justice_black') ? 0x24242c : 0xf2f2f6), A('justice_black') ? 0x303038 : null);
-    j.position.set(1.6, 0, -5.5); j.rotation.y = -PI / 2 - 0.4;
-    if (A('justice_down')) { j.rotation.set(0, -PI / 2, PI / 2); j.position.set(1.4, 0.22, -5.5); }
+    j.position.set(2.1, 0, -4.5); j.rotation.y = -PI / 2 - 0.4;
+    if (A('justice_down')) { j.rotation.set(0, -PI / 2, PI / 2); j.position.set(1.9, 0.22, -4.5); }
     if (A('justice_watch')) upd.push(() => { j.rotation.y = Math.atan2(camera.position.x - j.position.x, camera.position.z - j.position.z); });
     heroes.justice = j;
 
     const li = makeHero(g, 'lilica', () => makeLilica(g, !A('mic_gone')));
-    li.position.set(-1.7, 0, -11.5); li.rotation.y = PI / 2 + 0.4;
+    li.position.set(-2.1, 0, -12); li.rotation.y = PI / 2 + 0.4;
     if (A('lilica_float')) { let t = 0; upd.push(dt => { t += dt; li.position.y = 1.1 + Math.sin(t * 2) * 0.12; }); }
     heroes.lilica = li;
 
     if (!A('atari_gone')) {
       const at = makeHero(g, 'atari', () => makeAtari(g, A('atari_red') ? 0xe02a30 : 0x2a6cff), null, A('atari_red') ? 0xff3030 : null);
-      at.position.set(1.7, 0, -18.5); at.rotation.y = -PI / 2 - 0.4;
+      at.position.set(9, 0, -11.8); at.rotation.y = PI - 0.5;
       if (A('atari_big')) at.scale.setScalar(1.8);
       heroes.atari = at;
     }
 
     const th = makeHero(g, 'thirteen', () => makeThirteen(g, !A('scythe_gone')));
-    th.position.set(-1.6, 0, -25.5); th.rotation.y = PI / 2 + 0.4;
+    th.position.set(9.8, 0, -23); th.rotation.y = PI / 2 + 0.4;
     heroes.thirteen = th;
     if (A('thirteen_double')) {
       const t2 = makeHero(g, 'thirteen', () => makeThirteen(g, true));
-      t2.position.set(0.9, 0, -L + 1.6); t2.rotation.y = 0;
+      t2.position.set(13.4, 0, END + 1.8); t2.rotation.y = 0;
     }
   }
   // 名前タグ
@@ -629,7 +726,7 @@ function buildLevel(rankIdx, anomaly) {
       c.fillStyle = '#ff4f9e'; c.font = `bold 40px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
       c.fillText(txt, cw / 2, (ch - 26) / 2 + 4);
     }, { transparent: true });
-    st.position.set(-1.7, 2.55, -11.5);
+    st.position.set(-2.1, 2.55, -12);
     upd.push(() => { st.position.y = heroes.lilica.position.y + 2.55; });
     billboards.push(st);
   }
@@ -637,6 +734,7 @@ function buildLevel(rankIdx, anomaly) {
   // 空中のカード
   {
     const cols = [0xe84a5f, 0x3a8dff, 0x3cc47c, 0xa45cff];
+    const spots = [[0, -7], [2.5, -14], [9.5, -14], [12, -21]];
     const sp = A('cards_fast') ? -8 : 0.9;
     cols.forEach((col, i) => {
       const gold = A('card_gold') && i === 2;
@@ -646,7 +744,7 @@ function buildLevel(rankIdx, anomaly) {
         cx.fillStyle = gold ? '#e8b830' : hex(col); cx.beginPath(); cx.arc(cw / 2, 70, 30, 0, PI * 2); cx.fill();
         cx.fillStyle = '#fff'; cx.font = `bold 26px ${FONT}`; cx.textAlign = 'center'; cx.fillText('CARD', cw / 2, ch - 18);
       }, { double: true });
-      c.position.set(0, 3.2, -7 - i * 5.5);
+      c.position.set(spots[i][0], 3.2, spots[i][1]);
       const off = i * 0.8;
       upd.push(dt => { c.rotation.y += dt * sp; c.position.y = 3.2 + Math.sin(performance.now() / 600 + off) * 0.1; });
     });
@@ -655,7 +753,11 @@ function buildLevel(rankIdx, anomaly) {
   upd.push(() => billboards.forEach(b => b.quaternion.copy(camera.quaternion)));
 
   scene.add(g);
-  level = { group: g, L, anomaly, upd };
+  level = { group: g, endZ: END, rects: roadRects(END), anomaly, upd };
+}
+
+function walkable(x, z) {
+  return level.rects.some(([x0, x1, z0, z1]) => x >= x0 + 0.4 && x <= x1 - 0.4 && z >= z0 + 0.3 && z <= z1 - 0.3);
 }
 
 // ---------------------------------------------------------------- サウンド
@@ -769,7 +871,7 @@ function pickAnomaly() {
 function enterLoop() {
   const a = pickAnomaly();
   if (a) lastAnomaly = a;
-  beepZ = null;
+  beepPos = null;
   buildLevel(rank, a);
   camera.position.set(0, 1.6, -1.8);
   yaw = 0; pitch = 0; loopTime = 0;
@@ -858,10 +960,11 @@ function tick() {
     const speed = (keys.ShiftLeft || keys.ShiftRight) ? 6 : 4;
     const sin = Math.sin(yaw), cos = Math.cos(yaw);
     const p = camera.position;
-    p.x += (fx * cos + fz * sin) * speed * dt;
-    p.z += (-fx * sin + fz * cos) * speed * dt;
-    p.x = Math.max(-HALF + 0.4, Math.min(HALF - 0.4, p.x));
-    p.z = Math.max(-level.L + 0.3, Math.min(-0.3, p.z));
+    const nx = p.x + (fx * cos + fz * sin) * speed * dt;
+    const nz = p.z + (-fx * sin + fz * cos) * speed * dt;
+    if (walkable(nx, nz)) { p.x = nx; p.z = nz; }
+    else if (walkable(nx, p.z)) p.x = nx;
+    else if (walkable(p.x, nz)) p.z = nz;
     const moving = Math.min(len, 1) * speed;
     bob += moving * dt * 2.2;
     p.y = 1.6 + Math.sin(bob * 2) * 0.025 * Math.min(moving, 1);
@@ -869,12 +972,12 @@ function tick() {
     if (stepAcc > 0.9) { stepAcc = 0; footstep(); }
 
     if (beepGain) {
-      const on = beepZ !== null && (loopTime % 1.2) < 0.08;
-      beepGain.gain.value = on ? Math.max(0.2, 1 - Math.abs(p.z - beepZ) / 16) : 0;
+      const on = beepPos !== null && (loopTime % 1.2) < 0.08;
+      beepGain.gain.value = on ? Math.max(0.2, 1 - Math.hypot(p.x - beepPos.x, p.z - beepPos.z) / 16) : 0;
     }
 
-    if (p.z < -level.L + 0.9) decide('forward');
-    else if (p.z > -0.9 && loopTime > 1.2) decide('back');
+    if (p.x > 9 && p.z < level.endZ + 0.9) decide('forward');
+    else if (p.x < 3 && p.z > -0.9 && loopTime > 1.2) decide('back');
   } else if (beepGain) beepGain.gain.value = 0;
 
   level?.upd.forEach(f => f(dt));
