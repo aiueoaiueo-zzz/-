@@ -48,6 +48,12 @@
     display: none; pointer-events: none; z-index: 4; }
   #stick i { position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px;
     border-radius: 50%; background: #fff3; }
+  .models { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center;
+    margin-bottom: 18px; font-size: 13px; color: var(--dim); }
+  .pick { border: 1px dashed #fff6; padding: 8px 14px; border-radius: 6px; cursor: pointer; color: var(--fg); }
+  .pick:hover { background: #ffffff10; }
+  button.small { font-size: 13px; padding: 8px 14px; }
+  #modelStatus { flex-basis: 100%; }
   #log { max-height: 170px; overflow: auto; text-align: left; font-size: 13px; color: var(--dim);
     columns: 2; column-gap: 16px; margin: 0 0 20px; padding: 0; list-style: none; }
   #log li.found { color: var(--fg); }
@@ -71,6 +77,12 @@
     </div>
     <div class="keys">PC：クリックで視点固定 ／ WASD・矢印で移動 ／ マウスで視点 ／ Shiftでダッシュ<br>
       スマホ：左半分ドラッグで移動 ／ 右半分ドラッグで視点</div>
+    <div class="models">
+      <label class="pick" for="modelDir">MMDモデルのフォルダを選ぶ</label>
+      <input type="file" id="modelDir" webkitdirectory multiple hidden>
+      <button type="button" id="clearModels" class="small" hidden>モデルを外す</button>
+      <div id="modelStatus">MMDモデル未読み込み（ローポリで表示中）</div>
+    </div>
     <button id="startBtn">バトル開始</button>
     <p class="note">※「#コンパス 戦闘摂理解析システム」の非公式ファンアレンジです。ヒーローは雰囲気だけのラフ再現です。</p>
   </div>
@@ -90,9 +102,11 @@
   </div>
 </div>
 
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
 <script type="module">
 import * as THREE from 'three';
+import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 // ---------------------------------------------------------------- 設定
 const RANKS = ['F', 'E', 'D', 'C', 'B', 'A', 'S'];
@@ -107,12 +121,12 @@ const ANOMALIES = [
   { id: 'justice_down',  name: 'ジャスティスが倒れている' },
   { id: 'justice_black', name: 'ジャスティスが黒い' },
   { id: 'lilica_float',  name: 'リリカが浮いている' },
-  { id: 'mic_gone',      name: 'リリカのマイクがない' },
+  { id: 'mic_gone',      name: 'リリカのマイクがない', lowpoly: 'lilica' },
   { id: 'stamp_text',    name: 'スタンプが「ドンマイ…」になっている' },
   { id: 'atari_big',     name: 'アタリが巨大' },
   { id: 'atari_red',     name: 'アタリの髪が赤い' },
   { id: 'atari_gone',    name: 'アタリがいない' },
-  { id: 'scythe_gone',   name: '13の鎌がない' },
+  { id: 'scythe_gone',   name: '13の鎌がない', lowpoly: 'thirteen' },
   { id: 'thirteen_double', name: '奥にもう一人13がいる' },
   { id: 'portal_red',    name: 'ポータルBが敵色（赤）' },
   { id: 'portal_order',  name: 'ポータルの並びが A・C・B' },
@@ -229,6 +243,7 @@ const drawFloor = neon => (g, w, h) => {
 
 function dispose(obj) {
   obj.traverse(o => {
+    if (o.userData.shared) { o.userData.ownMats?.forEach(m => m.dispose()); return; }
     if (o.geometry) o.geometry.dispose();
     if (o.material) {
       const ms = Array.isArray(o.material) ? o.material : [o.material];
@@ -316,6 +331,124 @@ function makeThirteen(parent, withScythe = true) {
     const b1 = box(g, 0.08, 0.03, 0.55, 0xc8ccd8, 0.38, 2.05, 0.32); b1.rotation.x = 0.25;
     const b2 = box(g, 0.08, 0.03, 0.25, 0xc8ccd8, 0.38, 1.94, 0.66); b2.rotation.x = 0.9;
   }
+  parent.add(g);
+  return g;
+}
+
+// ---------------------------------------------------------------- MMDモデル（任意）
+// 選んだフォルダのファイルはこのブラウザ内（IndexedDB）にだけ保存し、外部には送らない
+const SLOTS = [
+  { id: 'justice',  keys: ['ジャスティス', 'justice'] },
+  { id: 'lilica',   keys: ['リリカ', 'lilica', 'lirica'] },
+  { id: 'atari',    keys: ['アタリ', 'atari'] },
+  { id: 'thirteen', keys: ['サーティーン', 'thirteen', '13'] },
+];
+const MODEL_EXT = /\.(pmx|pmd|png|jpe?g|bmp|tga|spa|sph|gif|webp)$/i;
+const mmd = {}; // スロットID -> { mesh, scale, name }
+let blobUrls = [];
+const norm = p => {
+  try { p = decodeURI(p); } catch (e) {}
+  return p.replace(/\\/g, '/').replace(/\/\.\//g, '/').normalize('NFC').toLowerCase();
+};
+
+function idb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('compass-mmd', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function saveFiles(files) {
+  try {
+    const db = await idb();
+    const tx = db.transaction('files', 'readwrite');
+    files ? tx.objectStore('files').put(files, 'all') : tx.objectStore('files').clear();
+    await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
+  } catch (e) {}
+}
+async function readFiles() {
+  try {
+    const db = await idb();
+    return await new Promise(res => {
+      const r = db.transaction('files').objectStore('files').get('all');
+      r.onsuccess = () => res(r.result || null);
+      r.onerror = () => res(null);
+    });
+  } catch (e) { return null; }
+}
+
+async function loadModelFiles(files) {
+  for (const k of Object.keys(mmd)) delete mmd[k];
+  blobUrls.forEach(u => URL.revokeObjectURL(u));
+  blobUrls = [];
+  if (!files?.length) return;
+  const urls = new Map();
+  for (const f of files) {
+    const u = URL.createObjectURL(f.blob);
+    blobUrls.push(u);
+    urls.set(norm('mmd/' + f.path), u);
+  }
+  // ファイル名にヒーロー名が入っていればそのスロットへ、残りは空いているスロットへ順に
+  const models = files.filter(f => /\.(pmx|pmd)$/i.test(f.path));
+  const free = SLOTS.map(s => s.id);
+  const assigned = [];
+  for (const m of models) {
+    const p = m.path.normalize('NFC').toLowerCase();
+    const s = SLOTS.find(s => free.includes(s.id) && s.keys.some(k => p.includes(k.toLowerCase())));
+    if (s) { free.splice(free.indexOf(s.id), 1); assigned.push([s.id, m]); }
+  }
+  for (const m of models) {
+    if (!free.length) break;
+    if (!assigned.some(a => a[1] === m)) assigned.push([free.shift(), m]);
+  }
+  const manager = new THREE.LoadingManager();
+  manager.setURLModifier(u => urls.get(norm(u)) ?? u);
+  const loader = new MMDLoader(manager);
+  let done = 0;
+  for (const [id, m] of assigned) {
+    $('modelStatus').textContent = `読み込み中… ${done + 1} / ${assigned.length}`;
+    try {
+      const mesh = await loader.loadAsync('mmd/' + m.path);
+      mesh.geometry.computeBoundingBox();
+      const bb = mesh.geometry.boundingBox;
+      const h = bb.max.y - bb.min.y || 20;
+      const name = m.path.split('/').pop().replace(/\.(pmx|pmd)$/i, '');
+      mmd[id] = { mesh, scale: 1.65 / h, name };
+    } catch (e) { console.warn('MMD load failed:', m.path, e); }
+    done++;
+  }
+}
+function modelStatusText() {
+  const names = SLOTS.filter(s => mmd[s.id]).map(s => mmd[s.id].name);
+  return names.length ? `MMDモデル使用中：${names.join('、')}` : 'MMDモデル未読み込み（ローポリで表示中）';
+}
+
+// MMDモデルがあればそれを、なければローポリを置く
+function makeHero(parent, slot, fallback, tint = null, hairTint = null) {
+  const t = mmd[slot];
+  if (!t) return fallback();
+  const g = new THREE.Group();
+  const inst = SkeletonUtils.clone(t.mesh);
+  inst.scale.setScalar(t.scale);
+  inst.traverse(o => { o.userData.shared = true; });
+  if (tint || hairTint) {
+    const mats = Array.isArray(inst.material) ? inst.material : [inst.material];
+    const hair = mats.filter(m => /髪|hair/i.test(m.name || ''));
+    const targets = tint ? mats : (hair.length ? hair : mats);
+    const color = new THREE.Color(tint ?? hairTint);
+    const own = [];
+    inst.material = mats.map(m => {
+      if (!targets.includes(m)) return m;
+      const c = m.clone();
+      if (c.diffuse) c.diffuse = c.diffuse.clone().multiply(color);
+      else if (c.color) c.color = c.color.clone().multiply(color);
+      own.push(c);
+      return c;
+    });
+    inst.userData.ownMats = own;
+  }
+  g.add(inst);
   parent.add(g);
   return g;
 }
@@ -447,39 +580,40 @@ function buildLevel(rankIdx, anomaly) {
   // ヒーロー
   const heroes = {};
   {
-    const j = makeJustice(g, A('justice_black') ? 0x24242c : 0xf2f2f6);
+    const j = makeHero(g, 'justice', () => makeJustice(g, A('justice_black') ? 0x24242c : 0xf2f2f6), A('justice_black') ? 0x303038 : null);
     j.position.set(1.6, 0, -5.5); j.rotation.y = -PI / 2 - 0.4;
     if (A('justice_down')) { j.rotation.set(0, -PI / 2, PI / 2); j.position.set(1.4, 0.22, -5.5); }
     if (A('justice_watch')) upd.push(() => { j.rotation.y = Math.atan2(camera.position.x - j.position.x, camera.position.z - j.position.z); });
     heroes.justice = j;
 
-    const li = makeLilica(g, !A('mic_gone'));
+    const li = makeHero(g, 'lilica', () => makeLilica(g, !A('mic_gone')));
     li.position.set(-1.7, 0, -11.5); li.rotation.y = PI / 2 + 0.4;
     if (A('lilica_float')) { let t = 0; upd.push(dt => { t += dt; li.position.y = 1.1 + Math.sin(t * 2) * 0.12; }); }
     heroes.lilica = li;
 
     if (!A('atari_gone')) {
-      const at = makeAtari(g, A('atari_red') ? 0xe02a30 : 0x2a6cff);
+      const at = makeHero(g, 'atari', () => makeAtari(g, A('atari_red') ? 0xe02a30 : 0x2a6cff), null, A('atari_red') ? 0xff3030 : null);
       at.position.set(1.7, 0, -18.5); at.rotation.y = -PI / 2 - 0.4;
       if (A('atari_big')) at.scale.setScalar(1.8);
       heroes.atari = at;
     }
 
-    const th = makeThirteen(g, !A('scythe_gone'));
+    const th = makeHero(g, 'thirteen', () => makeThirteen(g, !A('scythe_gone')));
     th.position.set(-1.6, 0, -25.5); th.rotation.y = PI / 2 + 0.4;
     heroes.thirteen = th;
     if (A('thirteen_double')) {
-      const t2 = makeThirteen(g, true);
+      const t2 = makeHero(g, 'thirteen', () => makeThirteen(g, true));
       t2.position.set(0.9, 0, -L + 1.6); t2.rotation.y = 0;
     }
   }
   // 名前タグ
   const names = { justice: '忠臣ジャスティス', lilica: 'リリカ', atari: '十文字アタリ', thirteen: '13†サーティーン' };
   for (const [k, h] of Object.entries(heroes)) {
-    const tag = textPlane(g, 'name:' + k, 256, 48, 1.3, 0.24, (c, cw, ch) => {
+    const label = mmd[k]?.name ?? names[k];
+    const tag = textPlane(g, 'name:' + label, 256, 48, 1.3, 0.24, (c, cw, ch) => {
       c.fillStyle = 'rgba(20,24,56,0.85)'; c.fillRect(0, 0, cw, ch);
       c.fillStyle = '#fff'; c.font = `bold 28px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
-      c.fillText(names[k], cw / 2, ch / 2 + 1);
+      c.fillText(label, cw / 2, ch / 2 + 1);
     }, { transparent: true });
     const top = k === 'thirteen' ? 2.35 : 2.1;
     tag.position.set(h.position.x, top * h.scale.y, h.position.z);
@@ -628,9 +762,8 @@ const saveFound = () => { try { localStorage.setItem('compass-found', JSON.strin
 function pickAnomaly() {
   if (rank === 0) return null; // F ランクは必ず「いつものステージ」
   if (Math.random() > ANOMALY_RATE) return null;
-  let a;
-  do { a = ANOMALIES[Math.floor(Math.random() * ANOMALIES.length)].id; } while (a === lastAnomaly);
-  return a;
+  const pool = ANOMALIES.filter(x => !(x.lowpoly && mmd[x.lowpoly]) && x.id !== lastAnomaly);
+  return pool[Math.floor(Math.random() * pool.length)].id;
 }
 
 function enterLoop() {
@@ -750,7 +883,34 @@ function tick() {
 }
 
 // タイトル背景（?a=異変ID で確認用にその異変を表示）
-buildLevel(0, new URLSearchParams(location.search).get('a'));
+const titleAnomaly = new URLSearchParams(location.search).get('a');
+buildLevel(0, titleAnomaly);
+
+async function applyModels(files) {
+  await loadModelFiles(files);
+  $('modelStatus').textContent = modelStatusText();
+  $('clearModels').hidden = !Object.keys(mmd).length;
+  if (state === 'title') buildLevel(0, titleAnomaly);
+}
+$('modelDir').addEventListener('change', async e => {
+  $('modelStatus').textContent = 'ファイルを読み込み中…';
+  // File のままだと保存・再読込で参照が切れることがあるので中身をコピーしておく
+  const files = await Promise.all([...e.target.files]
+    .filter(f => MODEL_EXT.test(f.name))
+    .map(async f => ({ path: f.webkitRelativePath || f.name, blob: new Blob([await f.arrayBuffer()]) })));
+  e.target.value = '';
+  if (!files.some(f => /\.(pmx|pmd)$/i.test(f.path))) {
+    $('modelStatus').textContent = 'フォルダの中に .pmx / .pmd ファイルが見つかりませんでした';
+    return;
+  }
+  await applyModels(files);
+  saveFiles(files);
+});
+$('clearModels').addEventListener('click', async () => {
+  await applyModels(null);
+  saveFiles(null);
+});
+readFiles().then(files => { if (files?.length) applyModels(files); });
 camera.position.set(0, 1.6, -1.8);
 window.__dbg = { camera, view: (y, p) => { yaw = y; pitch = p; } };
 tick();
